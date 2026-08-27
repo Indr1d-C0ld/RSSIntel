@@ -276,13 +276,22 @@ if ($item_tags) {
         <pre id="article-text"><?=$text_html?></pre>
       </div>
 
-      <!-- Sezione Traduzione NLLB -->
+      <!-- Sezione Traduzione (motore locale EN->IT, solo sulla selezione) -->
       <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <button id="translate-all-btn" class="btn" type="button">Traduci tutto</button>
         <button id="translate-sel-btn" class="btn" type="button">Traduci selezione</button>
         <button id="translate-stop-btn" class="btn" type="button" style="display:none;">Ferma traduzione</button>
+        <span id="translate-counter" class="meta" style="margin-left:8px">nessuna selezione</span>
         <span id="translate-status" class="meta" style="margin-left:8px"></span>
       </div>
+      <?php $tsl = (int)(cfg()['translate_soft_limit'] ?? 2000); ?>
+      <div class="meta" id="translate-note" style="margin-top:6px">
+        Il motore traduce <b>solo dall'inglese all'italiano</b> e al massimo
+        <b>~<span id="translate-limit-words"><?= (int)round($tsl / 6.2) ?></span> parole</b>
+        (<span id="translate-limit-chars"><?= $tsl ?></span> caratteri) per volta:
+        seleziona un brano nel testo qui sopra e premi <b>Traduci selezione</b>.
+        L'eventuale parte eccedente il limite (in rosso nell'anteprima) non viene inviata al motore.
+      </div>
+      <div id="translate-preview" style="border:1px dashed var(--border); padding:8px; margin-top:8px; display:none; max-height:20vh; overflow:auto; font-size:.85rem; white-space:pre-wrap; word-wrap:break-word;"></div>
       <div id="translation-output" style="border:1px solid var(--border); padding:10px; margin-top:10px; display:none; max-height:30vh; overflow:auto; background:#fefaf2;"></div>
     <?php endif; ?>
   </div>
@@ -341,8 +350,8 @@ if ($item_tags) {
 </div>
 
 <script>
-// Passa il testo dell'articolo come variabile globale per la traduzione
-window.ITEM_TEXT = <?=json_encode($text, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG)?>;
+// Limite pratico del motore di traduzione locale (caratteri), da config.php
+window.TRANSLATE_SOFT_LIMIT = <?= (int)(cfg()['translate_soft_limit'] ?? 2000) ?>;
 
 const form = document.getElementById('addForm');
 const msg = document.getElementById('msg');
@@ -375,44 +384,90 @@ async function delNote(id) {
   location.reload();
 }
 
-// --- Traduzione NLLB (con normalizzazione del testo) ---
+// --- Traduzione: motore locale EN->IT, solo sulla selezione, con limite ---
 (function() {
-  const btnAll   = document.getElementById('translate-all-btn');
   const btnSel   = document.getElementById('translate-sel-btn');
   const btnStop  = document.getElementById('translate-stop-btn');
   const status   = document.getElementById('translate-status');
+  const counter  = document.getElementById('translate-counter');
+  const preview  = document.getElementById('translate-preview');
   const output   = document.getElementById('translation-output');
+  const article  = document.getElementById('article-text');
 
-  if (!btnAll || !btnSel || !btnStop) return;
+  if (!btnSel || !btnStop || !article) return;
+
+  const LIMIT = Math.max(200, parseInt(window.TRANSLATE_SOFT_LIMIT, 10) || 2000);
+  const LIMIT_WORDS = Math.round(LIMIT / 6.2);
+
+  const lw = document.getElementById('translate-limit-words');
+  const lc = document.getElementById('translate-limit-chars');
+  if (lw) lw.textContent = String(LIMIT_WORDS);
+  if (lc) lc.textContent = String(LIMIT);
 
   let currentController = null;
+  let pendingSel = ''; // selezione catturata al mousedown sul bottone
 
   function setTranslating(isActive) {
-    btnAll.disabled = isActive;
     btnSel.disabled = isActive;
     btnStop.style.display = isActive ? '' : 'none';
   }
 
-  // Funzione di pulizia: rimuove newline, tab e collassa spazi multipli
+  // Rimuove newline/tab e collassa gli spazi multipli
   function cleanText(raw) {
-    return raw.replace(/[\n\r\t]+/g, ' ')
-              .replace(/\s{2,}/g, ' ')
-              .trim();
+    return raw.replace(/[\n\r\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
   }
 
-  async function translateText(text) {
-    // Pulisce il testo ricevuto prima di inviarlo
-    const cleanedText = cleanText(text);
+  function escapeHTML(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  }
 
-    if (!cleanedText) {
-      status.textContent = 'Nessun testo da tradurre.';
+  function countWords(s) {
+    s = s.trim();
+    return s ? s.split(/\s+/).length : 0;
+  }
+
+  // Testo selezionato, solo se la selezione ricade dentro il corpo dell'articolo
+  function currentSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return '';
+    const r = sel.getRangeAt(0);
+    if (!article.contains(r.commonAncestorContainer)) return '';
+    return sel.toString();
+  }
+
+  // Aggiorna contatore + anteprima della selezione corrente
+  function refresh() {
+    const cleaned = cleanText(currentSelection());
+    if (!cleaned) {
+      counter.textContent = 'nessuna selezione';
+      counter.style.color = '';
+      preview.style.display = 'none';
+      preview.innerHTML = '';
       return;
     }
+    const chars = cleaned.length;
+    const over  = chars > LIMIT;
+    counter.textContent = countWords(cleaned) + ' parole · ' + chars + '/' + LIMIT +
+                          ' caratteri' + (over ? ' — eccede il limite' : '');
+    counter.style.color = over ? '#b13b2d' : '';
 
-    // Annulla eventuale richiesta precedente
-    if (currentController) {
-      currentController.abort();
-    }
+    const head = escapeHTML(cleaned.slice(0, LIMIT));
+    const tail = escapeHTML(cleaned.slice(LIMIT));
+    preview.innerHTML = head + (tail
+      ? '<span style="background:#f6d9d4;color:#8a2e22;text-decoration:line-through;">' + tail + '</span>'
+      : '');
+    preview.style.display = 'block';
+  }
+
+  let debounce = null;
+  document.addEventListener('selectionchange', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(refresh, 120);
+  });
+
+  async function translateText(text) {
+    if (currentController) currentController.abort();
     currentController = new AbortController();
 
     setTranslating(true);
@@ -424,11 +479,7 @@ async function delNote(id) {
       const response = await fetch('translate.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          q: cleanedText,
-          source: 'en',
-          target: 'it'
-        }),
+        body: JSON.stringify({ q: text, source: 'en', target: 'it' }),
         credentials: 'same-origin',
         signal: currentController.signal
       });
@@ -458,34 +509,28 @@ async function delNote(id) {
     }
   }
 
-  btnAll.addEventListener('click', () => {
-    // Pulisce anche il testo completo prima di tradurre
-    const fullText = cleanText(window.ITEM_TEXT || '');
-    translateText(fullText);
-  });
+  // Cattura la selezione prima che il click sul bottone possa perderla
+  btnSel.addEventListener('mousedown', () => { pendingSel = cleanText(currentSelection()); });
 
   btnSel.addEventListener('click', () => {
-    const sel = window.getSelection().toString();
-    const cleanedSel = cleanText(sel);
-    if (!cleanedSel) {
-      status.textContent = 'Seleziona del testo prima di tradurre.';
+    const cleaned = pendingSel || cleanText(currentSelection());
+    pendingSel = '';
+    if (!cleaned) {
+      status.textContent = 'Seleziona del testo nel corpo dell’articolo prima di tradurre.';
       return;
     }
-    translateText(cleanedSel);
+    const payload = cleaned.slice(0, LIMIT);
+    status.textContent = (cleaned.length > LIMIT)
+      ? 'Selezione troncata a ' + LIMIT + ' caratteri (≈ ' + LIMIT_WORDS +
+        ' parole): la parte in rosso non e’ stata inviata.'
+      : '';
+    translateText(payload);
   });
 
   btnStop.addEventListener('click', () => {
-    if (currentController) {
-      currentController.abort();
-    }
+    if (currentController) currentController.abort();
   });
 
-  function escapeHTML(str) {
-    return str.replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/"/g, '&quot;')
-              .replace(/'/g, '&#039;');
-  }
+  refresh();
 })();
 </script>

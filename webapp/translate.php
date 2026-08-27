@@ -32,6 +32,14 @@ if ($maxChars > 0 && strlen($text) > $maxChars) {
     exit;
 }
 
+// Limite pratico del motore (token): tronca comunque alla soglia "soft" cosi'
+// non riceve mai piu' testo di quanto sappia tradurre in una volta. Il client
+// (item.php) tronca gia' e lo segnala; questa e' solo una rete di sicurezza.
+$softLimit = (int)(cfg()['translate_soft_limit'] ?? 2000);
+if ($softLimit > 0 && mb_strlen($text, 'UTF-8') > $softLimit) {
+    $text = mb_substr($text, 0, $softLimit, 'UTF-8');
+}
+
 // Chiamata al servizio di traduzione (vedi 'translate_url' in config.php)
 $ch = curl_init((string)(cfg()['translate_url'] ?? 'http://127.0.0.1:5000/translate'));
 curl_setopt_array($ch, [

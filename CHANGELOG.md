@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-27 — Traduzione: solo selezione, con limite visibile
+
+- `webapp/item.php`: rimosso il pulsante "Traduci tutto" e la sua logica (`window.ITEM_TEXT`, `btnAll`) — con un motore a limite di token la traduzione integrale non e' mai affidabile. Riscritto il blocco traduzione:
+  - contatore live della selezione (`N parole · C/limite caratteri`), rosso oltre soglia;
+  - anteprima della selezione con la coda eccedente il limite in rosso barrato (non inviata al motore);
+  - al clic invia solo la parte entro il limite e avvisa del troncamento;
+  - nota fissa: motore solo EN→IT, ~N parole/M caratteri per volta;
+  - la selezione conta solo se dentro `#article-text`, catturata al `mousedown`.
+- `webapp/translate.php`: rete di sicurezza — tronca `q` a `translate_soft_limit` lato server prima di chiamare il motore.
+- `config.sample.php`: nuovo campo `translate_soft_limit` (default 2000 caratteri, ~350 parole) documentato; `translate_max_chars` ridefinito come tetto rigido (413).
+
 ## 2026-08-27 — Keyword extraction: stoplist EN+IT
 
 - `webapp/stopwords.php` (nuovo): stoplist di ~1050 voci uniche (inglese + italiano) — articoli, preposizioni semplici e articolate, pronomi, congiunzioni, ausiliari/modali, avverbi di discorso, giorni/mesi, boilerplate web. Nessuna parola di contenuto.
