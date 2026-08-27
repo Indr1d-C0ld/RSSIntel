@@ -7,6 +7,7 @@ $db = db_ro();
 // Parametri GET
 $feed_id = isset($_GET['feed']) && ctype_digit($_GET['feed']) ? (int)$_GET['feed'] : null;
 $date_mode = $_GET['date'] ?? 'day'; // day, week, month
+if (!in_array($date_mode, ['day', 'week', 'month'], true)) $date_mode = 'day'; // whitelist: evita XSS riflesso negli href
 $day = $_GET['day'] ?? date('Y-m-d');
 $page = isset($_GET['page']) && ctype_digit($_GET['page']) ? (int)$_GET['page'] : 1;
 $per_page = 30;

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-27 — Fix sicurezza
+
+- `webapp/browse.php`: `$date_mode` (da `$_GET['date']`) non era validato e
+  veniva interpolato grezzo negli attributi `href` dei link di paginazione →
+  XSS riflesso. Aggiunta whitelist `{day, week, month}` subito dopo la lettura
+  del parametro; tutti gli usi a valle (chiave del `match`, confronti nelle
+  `<option>`, href) sono ora su valori sicuri.
+
 ## 2026-08-27 — Primo rilascio pubblico
 
 Versione neutra derivata dal deployment live, ripulita da dati e configurazioni.
