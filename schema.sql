@@ -68,7 +68,20 @@ CREATE TABLE IF NOT EXISTS annotation_tags (
   PRIMARY KEY(annotation_id, tag_id)
 );
 
--- Criteri di ricerca salvati, per utente (owner = REMOTE_USER / utente applicativo).
+-- Utenti applicativi (autenticazione gestita dalla webapp: login.php).
+-- La webapp la crea anche a runtime (login.php / users.php).
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'reader',   -- reader | collaborator | admin
+  disabled      INTEGER NOT NULL DEFAULT 0,
+  created_by    TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_login_at TEXT
+);
+
+-- Criteri di ricerca salvati, per utente (owner = username applicativo).
 -- La webapp la crea anche a runtime al primo salvataggio (search.php).
 CREATE TABLE IF NOT EXISTS saved_searches (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

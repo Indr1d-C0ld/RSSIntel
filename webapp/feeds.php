@@ -1,17 +1,9 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
+require __DIR__ . '/nav.php';
 
-session_start();
-if (!isset($_SESSION['csrf'])) {
-  $_SESSION['csrf'] = bin2hex(random_bytes(16));
-}
-
-$me = current_user();
-if (!is_admin($me)) {
-  http_response_code(403);
-  die("403 - non autorizzato");
-}
+require_role('admin');
 
 $db = db_rw();
 $db->exec("PRAGMA journal_mode=WAL;");
@@ -100,8 +92,7 @@ $msg = '';
 $err = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-  $csrf = (string)($_POST['csrf'] ?? '');
-  if (!$csrf || !hash_equals($_SESSION['csrf'], $csrf)) {
+  if (!csrf_check()) {
     $err = 'CSRF non valido';
   } else {
     $action = (string)($_POST['action'] ?? '');
@@ -264,12 +255,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
 <link rel="stylesheet" href="assets/style.css">
 <title>Feeds</title>
 
-<header>
-  <b>Feeds</b>
-  <div class="meta">
-    utente: <?=h($me)?> · <a href="browse.php">📰 Lettura</a> · <a href="search.php">Ricerca</a> · <a href="notes.php">Annotazioni</a>
-  </div>
-</header>
+<?php render_header('Feeds', 'feeds'); ?>
 
 <div class="wrap">
   <?php if ($msg): ?>
@@ -294,7 +280,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
     </div>
 
     <form method="post" class="row" style="margin-top:12px;">
-      <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+      <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
       <input type="hidden" name="action" value="add">
       <input class="grow" name="url" placeholder="https://... (RSS/Atom)">
       <button class="btn" type="submit">Aggiungi</button>
@@ -305,7 +291,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
     <b>Importa feeds da file</b>
 
     <form method="post" enctype="multipart/form-data" class="row" style="margin-top:12px;">
-      <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+      <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
       <input type="hidden" name="action" value="import">
       <input type="file" name="import_file" accept=".json,.csv,application/json,text/csv">
       <button class="btn" type="submit">Importa</button>
@@ -345,7 +331,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
 
           <div class="btns">
             <form method="post">
-              <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+              <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
               <input type="hidden" name="action" value="toggle">
               <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
               <button class="btn" type="submit">
@@ -354,7 +340,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
             </form>
 
             <form method="post" onsubmit="return confirm('Eliminare feed #<?= (int)$r['id'] ?>?')">
-              <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+              <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
               <input type="hidden" name="action" value="delete">
               <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
               <button class="btn" type="submit">Elimina</button>

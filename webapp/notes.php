@@ -1,9 +1,10 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
+require __DIR__ . '/nav.php';
+require_login();
 
 $db = db_ro();
-$me = current_user();
 
 $author   = trim((string)($_GET['author'] ?? ''));
 $contains = trim((string)($_GET['contains'] ?? ''));
@@ -57,10 +58,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
 <link rel="stylesheet" href="assets/style.css">
 <title>Annotazioni</title>
 
-<header>
-  <b>Annotazioni</b>
-  <div class="meta">utente: <?=h($me)?> · <a href="browse.php">📰 Lettura</a> · <a href="search.php">Ricerca</a> · <a href="feeds.php">Feeds</a></div>
-</header>
+<?php render_header('Annotazioni', 'notes'); ?>
 
 <div class="wrap">
   <form method="get" class="card">

@@ -1,7 +1,18 @@
-# Esempio di protezione ad accesso riservato (Apache 2.4).
-# Copia come .htaccess nella document root della webapp e crea il file
-# delle password con:  htpasswd -c /etc/apache2/.htpasswd-rssintel <utente>
-AuthType Basic
-AuthName "RSSIntel - Accesso riservato"
-AuthUserFile /etc/apache2/.htpasswd-rssintel
-Require valid-user
+# RSSIntel — autenticazione gestita dall'applicazione (tabella users + login.php).
+# Nessuna Basic Auth: l'accesso e' controllato da require_login() / require_role()
+# in ogni pagina PHP.
+
+# Nega l'accesso diretto via HTTP a configurazione, database e dump SQL.
+# (La webapp li legge dal filesystem con require/SQLite, non via HTTP.)
+<FilesMatch "\.(sql|db|db-wal|db-shm|sqlite|sqlite3)$">
+  Require all denied
+</FilesMatch>
+<Files "config.php">
+  Require all denied
+</Files>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "same-origin"
+</IfModule>

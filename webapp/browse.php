@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
+require __DIR__ . '/nav.php';
+require_login();
 
 $db = db_ro();
 
@@ -65,7 +67,6 @@ $feeds = [];
 $resf = $db->query("SELECT id, COALESCE(title, url) AS name FROM feeds ORDER BY name ASC");
 while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
 
-$me = current_user();
 ?>
 <!doctype html>
 <meta charset="utf-8">
@@ -73,15 +74,7 @@ $me = current_user();
 <link rel="stylesheet" href="assets/style.css">
 <title>RSSIntel — Leggi i feed</title>
 
-<header>
-  <b>📰 Lettura cronologica</b>
-  <div class="meta">
-    utente: <?=h($me)?> ·
-    <a href="search.php">Ricerca</a> ·
-    <a href="notes.php">Annotazioni</a> ·
-    <a href="feeds.php">Feeds</a>
-  </div>
-</header>
+<?php render_header('📰 Lettura cronologica', 'browse'); ?>
 
 <div class="wrap">
   <form method="get" class="card">

@@ -2,9 +2,6 @@
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
 
-session_start();
-if (!isset($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16));
-
 function out(array $x, int $code=200): void {
   http_response_code($code);
   header('Content-Type: application/json; charset=utf-8');
@@ -14,12 +11,13 @@ function out(array $x, int $code=200): void {
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') out(['ok'=>false,'error'=>'POST richiesto'], 405);
 
-$csrf = (string)($_POST['csrf'] ?? '');
-if (!$csrf || !hash_equals($_SESSION['csrf'], $csrf)) out(['ok'=>false,'error'=>'CSRF non valido'], 403);
+if (auth_user() === null) out(['ok'=>false,'error'=>'non autenticato'], 401);
+if (!csrf_check())        out(['ok'=>false,'error'=>'CSRF non valido'], 403);
+if (!can_annotate())      out(['ok'=>false,'error'=>'permesso negato (sola lettura)'], 403);
 
 $action = (string)($_POST['action'] ?? '');
 $me = current_user();
-$admin = is_admin($me);
+$admin = is_admin();
 
 $db = db_rw();
 $db->exec("PRAGMA journal_mode=WAL;");

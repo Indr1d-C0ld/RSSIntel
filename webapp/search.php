@@ -1,9 +1,8 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
-
-session_start();
-if (!isset($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16));
+require __DIR__ . '/nav.php';
+require_login();
 
 $me = current_user();
 
@@ -31,8 +30,7 @@ function saved_searches_schema(): string {
 
 /* ===== POST: salva / elimina una ricerca ===== */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-  $csrf = (string)($_POST['csrf'] ?? '');
-  if (!$csrf || !hash_equals($_SESSION['csrf'], $csrf)) {
+  if (!csrf_check()) {
     http_response_code(403);
     die('CSRF non valido');
   }
@@ -248,16 +246,7 @@ function saved_url(array $s): string {
 <link rel="stylesheet" href="assets/style.css">
 <title>RSSIntel — Ricerca</title>
 
-<header>
-  <b>RSSIntel — Ricerca</b>
-  <div class="meta">
-    utente: <?=h($me)?> ·
-    <a href="browse.php">📰 Lettura</a> ·
-    <a href="search.php">Ricerca</a> ·
-    <a href="notes.php">Annotazioni</a> ·
-    <a href="feeds.php">Feeds</a>
-  </div>
-</header>
+<?php render_header('RSSIntel — Ricerca', 'search'); ?>
 
 <div class="wrap">
   <?php if ($flash): ?>
@@ -281,7 +270,7 @@ function saved_url(array $s): string {
             </span>
           </div>
           <form method="post" onsubmit="return confirm('Eliminare la ricerca «<?=h((string)$s['name'])?>»?')">
-            <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+            <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
             <input type="hidden" name="action" value="delete">
             <input type="hidden" name="id" value="<?= (int)$s['id'] ?>">
             <input type="hidden" name="ret_q" value="<?=h($q)?>">
@@ -349,7 +338,7 @@ function saved_url(array $s): string {
         </div>
 
         <form method="post" class="row" style="gap:6px">
-          <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+          <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
           <input type="hidden" name="action" value="save">
           <input type="hidden" name="q" value="<?=h($q)?>">
           <input type="hidden" name="feed_id" value="<?=h($feed_id)?>">

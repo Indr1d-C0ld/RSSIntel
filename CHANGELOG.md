@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-08-27 — Multi-utente e ruoli
+
+- Autenticazione applicativa (niente piu' Basic Auth). Nuova tabella
+  `users(username, password_hash, role, disabled, created_by, created_at,
+  last_login_at)`, ruoli **reader** / **collaborator** / **admin**.
+- `webapp/lib.php`: sessione + CSRF centralizzati (cookie HttpOnly, SameSite=Lax);
+  helper `auth_user()`, `require_login()`, `require_role()`, `current_user()`
+  (ora dalla sessione), `current_role()`, `can_annotate()`, `csrf_token()`,
+  `csrf_check()`. `is_admin()` ora conta il ruolo di sessione.
+- Nuovi: `webapp/nav.php` (`render_header()` condiviso — elimina l'header
+  duplicato in 5 pagine), `webapp/login.php` (+ creazione del primo
+  amministratore quando la tabella e' vuota), `webapp/logout.php`,
+  `webapp/users.php` (admin: crea / cambia ruolo / reset password / disabilita /
+  elimina; non ci si puo' auto-declassare ne' lasciare zero admin attivi),
+  `webapp/profile.php` (cambio password proprio, min 8).
+- `webapp/browse.php` `notes.php` `search.php` `item.php`: `require_login()` +
+  `render_header()`. `item.php` nasconde il form annotazioni e i pulsanti
+  Elimina a chi non puo' annotare.
+- `webapp/feeds.php`: gate `require_role('admin')`.
+- `webapp/annotations.php`: 401 se non autenticato, 403 se ruolo `reader`.
+- `schema.sql`: tabella `users` (creata anche a runtime da login.php/users.php).
+- `.htaccess` / `deploy/htaccess.sample`: rimossa la Basic Auth; negato
+  l'accesso HTTP diretto a `config.php` / `*.db` / `*.sql`; aggiunti header
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
+
 ## 2026-08-27 — Ricerche salvate
 
 - `webapp/search.php`: sessione + CSRF; handler POST `save`/`delete` con pattern PRG; riquadro "Ricerche salvate" per-utente in cima; form "Salva questa ricerca" accanto al conteggio risultati. La tabella si auto-crea al primo salvataggio (`CREATE TABLE IF NOT EXISTS` sul path di scrittura); il path di lettura e' protetto da un controllo su `sqlite_master`.

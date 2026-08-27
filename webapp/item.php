@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
+require __DIR__ . '/nav.php';
+require_login();
 
 function stopwords(): array {
   static $sw = null;
@@ -58,9 +60,6 @@ function read_text_maybe_gz(string $path): string {
   return ($raw === false) ? '' : (string)$raw;
 }
 
-session_start();
-if (!isset($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16));
-
 $id_raw = trim((string)($_GET['id'] ?? ''));
 if ($id_raw === '' || !ctype_digit($id_raw)) die("id mancante/non valido");
 $item_id = (int)$id_raw;
@@ -87,7 +86,7 @@ if (!empty($row['text_path'])) {
 $keywords = $text !== '' ? extract_keywords($text, 10) : [];
 $text_html = h($text);
 
-$me = current_user();
+$may_annotate = can_annotate();
 
 $notes = [];
 $item_tags = [];
@@ -166,15 +165,7 @@ if ($item_tags) {
 <link rel="stylesheet" href="assets/style.css">
 <title><?=h((string)$item_id)?></title>
 
-<header>
-  <b><?=h((string)$item_id)?></b>
-  <?php if (!empty($row['feed_title'])): ?>
-    <span class="badge"><?=h((string)$row['feed_title'])?></span>
-  <?php endif; ?>
-  <div class="meta">
-    utente: <?=h($me)?> · <a href="browse.php">📰 Lettura</a> · <a href="search.php">Ricerca</a> · <a href="notes.php">Annotazioni</a> · <a href="feeds.php">Feeds</a>
-  </div>
-</header>
+<?php render_header('Item ' . (string)$item_id . (!empty($row['feed_title']) ? ' — ' . (string)$row['feed_title'] : '')); ?>
 
 <div class="wrap grid">
   <div class="card">
@@ -299,10 +290,11 @@ if ($item_tags) {
   <div class="card">
     <b>Annotazioni</b>
 
+    <?php if ($may_annotate): ?>
     <hr>
     <b>Aggiungi annotazione</b>
     <form id="addForm" style="margin-top:8px">
-      <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+      <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
       <input type="hidden" name="action" value="add">
       <input type="hidden" name="item_id" value="<?=h((string)$item_id)?>">
 
@@ -318,6 +310,9 @@ if ($item_tags) {
       <button class="btn" type="submit">Salva</button>
       <span id="msg" class="meta"></span>
     </form>
+    <?php else: ?>
+    <div class="meta" style="margin-top:8px">Sola lettura: il tuo ruolo non consente di annotare.</div>
+    <?php endif; ?>
 
     <hr>
     <b>Annotazioni (<?=count($notes)?>)</b>
@@ -340,9 +335,11 @@ if ($item_tags) {
 
           <div style="margin-top:8px"><?= nl2br(h((string)$n['note'])) ?></div>
 
+          <?php if ($may_annotate && (is_admin() || (string)$n['author'] === current_user())): ?>
           <div style="margin-top:8px">
             <button class="btn" type="button" onclick="delNote(<?= (int)$n['id'] ?>)">Elimina</button>
           </div>
+          <?php endif; ?>
         </div>
       <?php endforeach; ?>
     <?php endif; ?>
@@ -356,7 +353,7 @@ window.TRANSLATE_SOFT_LIMIT = <?= (int)(cfg()['translate_soft_limit'] ?? 2000) ?
 const form = document.getElementById('addForm');
 const msg = document.getElementById('msg');
 
-form.addEventListener('submit', async (e) => {
+if (form) form.addEventListener('submit', async (e) => {
   e.preventDefault();
   msg.textContent = 'Salvataggio…';
   const fd = new FormData(form);
@@ -372,7 +369,7 @@ form.addEventListener('submit', async (e) => {
 async function delNote(id) {
   if (!confirm('Eliminare annotazione #' + id + '?')) return;
   const fd = new FormData();
-  fd.set('csrf', '<?=h($_SESSION['csrf'])?>');
+  fd.set('csrf', '<?=h(csrf_token())?>');
   fd.set('action', 'delete');
   fd.set('id', String(id));
   const r = await fetch('annotations.php', { method: 'POST', body: fd });
