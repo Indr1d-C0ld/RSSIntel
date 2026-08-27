@@ -1,0 +1,5 @@
+# Dipendenze dirette del fetcher RSSIntel (Python 3.11+).
+# Versioni allineate al deployment di riferimento; aggiorna liberamente.
+feedparser==6.0.12
+requests==2.34.2
+trafilatura==2.1.0

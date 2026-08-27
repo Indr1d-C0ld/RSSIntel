@@ -1,0 +1,7 @@
+# Esempio di protezione ad accesso riservato (Apache 2.4).
+# Copia come .htaccess nella document root della webapp e crea il file
+# delle password con:  htpasswd -c /etc/apache2/.htpasswd-rssintel <utente>
+AuthType Basic
+AuthName "RSSIntel - Accesso riservato"
+AuthUserFile /etc/apache2/.htpasswd-rssintel
+Require valid-user

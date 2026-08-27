@@ -1,0 +1,16 @@
+[Unit]
+Description=RSSIntel - fetch and index feeds
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+# Adatta i percorsi al tuo ambiente (venv + posizione dello script).
+Environment=RSSINTEL_DB=/var/lib/rssintel/rssintel.db
+Environment=RSSINTEL_TXT_DIR=/var/lib/rssintel/text
+Environment=RSSINTEL_RAW_DIR=/var/lib/rssintel/raw
+Environment=RSSINTEL_UA=RSSIntel/1.1 (+https://example.com; research)
+ExecStart=/opt/rssintel-venv/bin/python /opt/rssintel/rssintel_fetch.py
+WorkingDirectory=/opt/rssintel

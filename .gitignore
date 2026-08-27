@@ -1,0 +1,20 @@
+# Configurazione reale
+config.php
+
+# Database e dati locali
+*.db
+*.db-shm
+*.db-wal
+/data/
+raw/
+text/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Sistema
+.DS_Store
