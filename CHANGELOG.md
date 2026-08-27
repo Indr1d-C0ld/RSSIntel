@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-27 — Ricerche salvate
+
+- `webapp/search.php`: sessione + CSRF; handler POST `save`/`delete` con pattern PRG; riquadro "Ricerche salvate" per-utente in cima; form "Salva questa ricerca" accanto al conteggio risultati. La tabella si auto-crea al primo salvataggio (`CREATE TABLE IF NOT EXISTS` sul path di scrittura); il path di lettura e' protetto da un controllo su `sqlite_master`.
+- `schema.sql`: nuova tabella `saved_searches(owner, name, q, feed_id, result_limit, created_at)` con `UNIQUE(owner, name)` + indice `idx_saved_searches_owner`.
+- Delete vincolato a `WHERE id=:id AND owner=:me`: non si possono eliminare ricerche di altri utenti.
+
 ## 2026-08-27 — Traduzione: solo selezione, con limite visibile
 
 - `webapp/item.php`: rimosso il pulsante "Traduci tutto" e la sua logica (`window.ITEM_TEXT`, `btnAll`) — con un motore a limite di token la traduzione integrale non e' mai affidabile. Riscritto il blocco traduzione:

@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS annotation_tags (
   PRIMARY KEY(annotation_id, tag_id)
 );
 
+-- Criteri di ricerca salvati, per utente (owner = REMOTE_USER / utente applicativo).
+-- La webapp la crea anche a runtime al primo salvataggio (search.php).
+CREATE TABLE IF NOT EXISTS saved_searches (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner        TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  q            TEXT NOT NULL,
+  feed_id      INTEGER,
+  result_limit INTEGER,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(owner, name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_items_feed ON items(feed_id);
 CREATE INDEX IF NOT EXISTS idx_items_pub  ON items(published_at);
 CREATE INDEX IF NOT EXISTS idx_ann_item   ON annotations(item_id);
+CREATE INDEX IF NOT EXISTS idx_saved_searches_owner ON saved_searches(owner, name);
