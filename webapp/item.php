@@ -3,12 +3,17 @@ declare(strict_types=1);
 require __DIR__ . '/lib.php';
 
 function stopwords(): array {
-  return [
-    'the','and','for','that','with','this','from','have','were','been','are','was','not',
-    'but','they','you','your','their','his','her','she','him','its','who','whom','which',
-    'page','document','file','image','scan','date','time','number','case','said','also',
-    'into','over','under','between','during','after','before','about','above','below',
-  ];
+  static $sw = null;
+  if ($sw === null) {
+    $f = __DIR__ . '/stopwords.php';
+    $list = is_file($f) ? require $f : [];
+    // normalizza a minuscolo per confronto coerente con extract_keywords()
+    $sw = array_fill_keys(array_map(
+      static fn($w) => mb_strtolower((string)$w, 'UTF-8'),
+      is_array($list) ? $list : []
+    ), true);
+  }
+  return $sw;
 }
 
 function extract_keywords(string $text, int $limit = 8): array {
@@ -18,7 +23,7 @@ function extract_keywords(string $text, int $limit = 8): array {
 
   $words = explode(' ', $text);
   $freq = [];
-  $stop = array_flip(stopwords());
+  $stop = stopwords(); // gia' come mappa [parola => true]
 
   foreach ($words as $w) {
     $w = trim($w);
@@ -29,7 +34,14 @@ function extract_keywords(string $text, int $limit = 8): array {
   }
 
   arsort($freq);
-  return array_slice(array_keys($freq), 0, $limit);
+
+  // Scarta gli hapax (1 sola occorrenza): la frequenza e' significativa solo
+  // se la parola ricorre. Se cosi' restano meno di $limit candidati (testi
+  // brevi), ripiega sull'elenco completo per non svuotare la sezione.
+  $strong = array_filter($freq, static fn($c) => $c >= 2);
+  $pool = count($strong) >= $limit ? $strong : $freq;
+
+  return array_slice(array_keys($pool), 0, $limit);
 }
 
 function read_text_maybe_gz(string $path): string {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-27 — Keyword extraction: stoplist EN+IT
+
+- `webapp/stopwords.php` (nuovo): stoplist di ~1050 voci uniche (inglese + italiano) — articoli, preposizioni semplici e articolate, pronomi, congiunzioni, ausiliari/modali, avverbi di discorso, giorni/mesi, boilerplate web. Nessuna parola di contenuto.
+- `webapp/item.php`: `stopwords()` ora carica `stopwords.php` (memoizzato, normalizzato a minuscolo); `extract_keywords()` scarta le parole con una sola occorrenza (hapax), con ripiego all'elenco completo sui testi brevi. La sezione "Parole piu' frequenti" non mostra piu' particelle grammaticali.
+
 ## 2026-08-27 — browse.php: item senza published_at
 
 - `webapp/browse.php`: filtro e ordinamento della vista cronologica passano da
