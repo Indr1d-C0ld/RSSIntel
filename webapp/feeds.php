@@ -353,7 +353,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
         </div>
 
         <div class="meta" style="margin-top:8px;">
-          last_fetch: <?=h((string)($r['last_fetch_at'] ?: 'n/d'))?> ·
+          last_fetch: <?=h(fmt_dt((string)$r['last_fetch_at']) ?: 'n/d')?> ·
           status: <?=h((string)($r['last_status'] ?? 'n/d'))?>
           <?php if (!empty($r['last_error'])): ?>
             · errore: <?=h((string)$r['last_error'])?>

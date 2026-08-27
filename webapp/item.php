@@ -87,6 +87,7 @@ $keywords = $text !== '' ? extract_keywords($text, 10) : [];
 $text_html = h($text);
 
 $may_annotate = can_annotate();
+$is_fav = is_favorite($db, $item_id);
 
 $notes = [];
 $item_tags = [];
@@ -169,15 +170,26 @@ if ($item_tags) {
 
 <div class="wrap grid">
   <div class="card">
-    <b>Dettagli</b>
+    <div class="row" style="justify-content:space-between">
+      <b>Dettagli</b>
+      <form method="post" action="favorites.php">
+        <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+        <input type="hidden" name="action" value="<?= $is_fav ? 'remove' : 'add' ?>">
+        <input type="hidden" name="item_id" value="<?=h((string)$item_id)?>">
+        <input type="hidden" name="ret" value="item.php?id=<?=h((string)$item_id)?>">
+        <button class="btn" type="submit">
+          <?= $is_fav ? '★ Nei favoriti — rimuovi' : '☆ Aggiungi ai favoriti' ?>
+        </button>
+      </form>
+    </div>
 
     <?php if (!empty($row['title'])): ?>
       <div class="small" style="margin-top:8px"><b><?=h((string)$row['title'])?></b></div>
     <?php endif; ?>
 
     <div class="meta" style="margin-top:6px">
-      Pubblicato: <?=h((string)($row['published_at'] ?: 'n/d'))?> ·
-      Fetch: <?=h((string)$row['fetched_at'])?>
+      Pubblicato: <?=h(fmt_dt((string)$row['published_at']) ?: 'n/d')?> ·
+      Fetch: <?=h(fmt_dt((string)$row['fetched_at']))?>
     </div>
 
     <?php if (!empty($row['author'])): ?>
@@ -323,9 +335,9 @@ if ($item_tags) {
       <?php foreach ($notes as $n): ?>
         <div class="card" style="margin-top:10px" data-id="<?= (int)$n['id'] ?>">
           <div class="meta">
-            <b><?=h((string)$n['author'])?></b> · <?=h((string)$n['created_at'])?>
+            <b><?=h((string)$n['author'])?></b> · <?=h(fmt_dt((string)$n['created_at']))?>
             <?php if (!empty($n['updated_at'])): ?>
-              · aggiornato: <?=h((string)$n['updated_at'])?>
+              · aggiornato: <?=h(fmt_dt((string)$n['updated_at']))?>
             <?php endif; ?>
           </div>
 

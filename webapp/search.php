@@ -111,6 +111,10 @@ $feed_id = trim((string)($_GET['feed_id'] ?? ''));
 $limit = (int)($_GET['limit'] ?? 50);
 if ($limit <= 0) $limit = 50;
 if ($limit > 200) $limit = 200;
+$page = (isset($_GET['page']) && ctype_digit((string)$_GET['page'])) ? max(1, (int)$_GET['page']) : 1;
+$total = 0;
+$pages = 0;
+$has_feed = ($feed_id !== '' && ctype_digit($feed_id));
 
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
@@ -151,85 +155,68 @@ if ($q !== '') {
       throw new RuntimeException("Tabella FTS items_fts non trovata nel DB.");
     }
 
-    $sql = "
-      SELECT i.id, i.title, i.link, i.published_at, i.fetched_at,
-             COALESCE(f.title, f.url) AS feed_title,
-             snippet(items_fts, 1, char(2), char(3), '…', 18) AS snip
-      FROM items_fts
-      JOIN items i ON i.id = items_fts.rowid
-      JOIN feeds f ON f.id = i.feed_id
-      WHERE items_fts MATCH :q
-    ";
+    $feed_clause = $has_feed ? " AND i.feed_id = :fid " : "";
 
-    if ($feed_id !== '' && ctype_digit($feed_id)) {
-      $sql .= " AND i.feed_id = :fid ";
+    // Conteggio totale (per la paginazione).
+    $cst = $db->prepare("
+      SELECT COUNT(*) AS c
+      FROM items_fts JOIN items i ON i.id = items_fts.rowid
+      WHERE items_fts MATCH :q $feed_clause
+    ");
+    $cst->bindValue(':q', $q, SQLITE3_TEXT);
+    if ($has_feed) $cst->bindValue(':fid', (int)$feed_id, SQLITE3_INTEGER);
+    $cres = $cst->execute();
+    $total = ($cres === false) ? 0 : (int)$cres->fetchArray(SQLITE3_ASSOC)['c'];
+
+    $pages = ($limit > 0) ? (int)ceil($total / $limit) : 0;
+    if ($pages > 0 && $page > $pages) $page = $pages;
+    $offset = ($page - 1) * $limit;
+
+    // Esegue la SELECT dei risultati con l'espressione snippet passata.
+    $run = function (string $snip_expr)
+        use ($db, $q, $has_feed, $feed_id, $feed_clause, $limit, $offset) {
+      $sql = "
+        SELECT i.id, i.title, i.link, i.published_at, i.fetched_at,
+               COALESCE(f.title, f.url) AS feed_title,
+               $snip_expr AS snip
+        FROM items_fts
+        JOIN items i ON i.id = items_fts.rowid
+        JOIN feeds f ON f.id = i.feed_id
+        WHERE items_fts MATCH :q $feed_clause
+        ORDER BY COALESCE(i.published_at, i.fetched_at) DESC
+        LIMIT :limit OFFSET :offset
+      ";
+      $st = $db->prepare($sql);
+      if ($st === false) throw new RuntimeException("Prepare fallita: " . $db->lastErrorMsg());
+      $st->bindValue(':q', $q, SQLITE3_TEXT);
+      if ($has_feed) $st->bindValue(':fid', (int)$feed_id, SQLITE3_INTEGER);
+      $st->bindValue(':limit', $limit, SQLITE3_INTEGER);
+      $st->bindValue(':offset', $offset, SQLITE3_INTEGER);
+      return $st->execute();
+    };
+
+    $res = $run("snippet(items_fts, 1, char(2), char(3), '…', 24)");
+    if ($res === false && stripos($db->lastErrorMsg(), 'snippet') !== false) {
+      $res = $run("''"); // FTS senza testo conservato: nessun estratto
     }
-
-    $sql .= " ORDER BY COALESCE(i.published_at, i.fetched_at) DESC LIMIT :limit ";
-
-    $stmt = $db->prepare($sql);
-    if ($stmt === false) {
-      throw new RuntimeException("Prepare fallita: " . $db->lastErrorMsg());
-    }
-
-    $stmt->bindValue(':q', $q, SQLITE3_TEXT);
-    if ($feed_id !== '' && ctype_digit($feed_id)) {
-      $stmt->bindValue(':fid', (int)$feed_id, SQLITE3_INTEGER);
-    }
-    $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
-
-    $res = $stmt->execute();
-
     if ($res === false) {
-      $sqlite_err = $db->lastErrorMsg();
-
-      if (stripos($sqlite_err, 'snippet') !== false) {
-        $sql2 = "
-          SELECT i.id, i.title, i.link, i.published_at, i.fetched_at,
-                 COALESCE(f.title, f.url) AS feed_title,
-                 '' AS snip
-          FROM items_fts
-          JOIN items i ON i.id = items_fts.rowid
-          JOIN feeds f ON f.id = i.feed_id
-          WHERE items_fts MATCH :q
-        ";
-
-        if ($feed_id !== '' && ctype_digit($feed_id)) {
-          $sql2 .= " AND i.feed_id = :fid ";
-        }
-
-        $sql2 .= " ORDER BY COALESCE(i.published_at, i.fetched_at) DESC LIMIT :limit ";
-
-        $stmt2 = $db->prepare($sql2);
-        if ($stmt2 === false) {
-          throw new RuntimeException("Prepare fallback fallita: " . $db->lastErrorMsg());
-        }
-
-        $stmt2->bindValue(':q', $q, SQLITE3_TEXT);
-        if ($feed_id !== '' && ctype_digit($feed_id)) {
-          $stmt2->bindValue(':fid', (int)$feed_id, SQLITE3_INTEGER);
-        }
-        $stmt2->bindValue(':limit', $limit, SQLITE3_INTEGER);
-
-        $res2 = $stmt2->execute();
-        if ($res2 === false) {
-          throw new RuntimeException("Execute fallback fallita: " . $db->lastErrorMsg());
-        }
-
-        while ($r = $res2->fetchArray(SQLITE3_ASSOC)) {
-          $rows[] = $r;
-        }
-      } else {
-        throw new RuntimeException("Execute fallita: " . $sqlite_err);
-      }
-    } else {
-      while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
-        $rows[] = $r;
-      }
+      throw new RuntimeException("Execute fallita: " . $db->lastErrorMsg());
     }
+
+    while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
   } catch (Throwable $e) {
     $err = $e->getMessage();
   }
+}
+
+/** URL di una pagina dei risultati, preservando q / feed / limite. */
+function page_url(int $n, string $q, string $feed_id, int $limit): string {
+  return 'search.php?' . http_build_query(array_filter([
+    'q'       => $q,
+    'feed_id' => ($feed_id !== '' && ctype_digit($feed_id)) ? $feed_id : '',
+    'limit'   => $limit,
+    'page'    => $n,
+  ], static fn($v) => $v !== '' && $v !== null));
 }
 
 /** URL di richiamo di una ricerca salvata */
@@ -330,10 +317,11 @@ function saved_url(array $s): string {
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <div class="grow">
-          <b><?=count($rows)?> risultati</b>
+          <b><?=$total?> risultati</b>
           <div class="meta">
-            limite: <?=$limit?>
-            <?= ($feed_id !== '' && ctype_digit($feed_id)) ? ' · feed_id: ' . h($feed_id) : '' ?>
+            <?php if ($pages > 1): ?>pagina <?=$page?> di <?=$pages?> · <?php endif; ?>
+            <?=$limit?> per pagina
+            <?= $has_feed ? ' · feed_id: ' . h($feed_id) : '' ?>
           </div>
         </div>
 
@@ -373,7 +361,7 @@ function saved_url(array $s): string {
               <?php endif; ?>
 
               <div class="meta result-meta">
-                <?=h((string)($r['published_at'] ?: $r['fetched_at']))?>
+                <?=h(fmt_dt((string)($r['published_at'] ?: $r['fetched_at'])))?>
                 <?php if (!empty($r['link'])): ?>
                   · <a href="<?=h((string)$r['link'])?>" target="_blank">Apri fonte</a>
                 <?php endif; ?>
@@ -388,6 +376,21 @@ function saved_url(array $s): string {
         </div>
         <hr>
       <?php endforeach; ?>
+
+      <?php if ($pages > 1): ?>
+        <div class="btns" style="justify-content:center; margin-top:16px">
+          <?php if ($page > 1): ?>
+            <a class="btn" href="<?=h(page_url($page - 1, $q, $feed_id, $limit))?>">◀ Prec</a>
+          <?php endif; ?>
+          <?php for ($p = max(1, $page - 2); $p <= min($pages, $page + 2); $p++): ?>
+            <a class="btn <?= $p === $page ? 'active' : '' ?>"
+               href="<?=h(page_url($p, $q, $feed_id, $limit))?>"><?=$p?></a>
+          <?php endfor; ?>
+          <?php if ($page < $pages): ?>
+            <a class="btn" href="<?=h(page_url($page + 1, $q, $feed_id, $limit))?>">Succ ▶</a>
+          <?php endif; ?>
+        </div>
+      <?php endif; ?>
     </div>
   <?php endif; ?>
 </div>

@@ -32,12 +32,13 @@ CREATE TABLE IF NOT EXISTS items (
 );
 
 -- FTS: indicizza titolo + testo + url + feed title (se vuoi)
+-- FTS5 self-contained (senza content=''): conserva il testo indicizzato, cosi'
+-- snippet()/highlight() funzionano nei risultati di ricerca.
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
   title,
   body,
   link,
   feed,
-  content='',
   tokenize='unicode61'
 );
 
@@ -98,3 +99,15 @@ CREATE INDEX IF NOT EXISTS idx_items_feed ON items(feed_id);
 CREATE INDEX IF NOT EXISTS idx_items_pub  ON items(published_at);
 CREATE INDEX IF NOT EXISTS idx_ann_item   ON annotations(item_id);
 CREATE INDEX IF NOT EXISTS idx_saved_searches_owner ON saved_searches(owner, name);
+
+-- Articoli salvati tra i favoriti, per utente, con nota personale.
+-- La webapp la crea anche a runtime (favorites.php).
+CREATE TABLE IF NOT EXISTS favorites (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner      TEXT NOT NULL,
+  item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  note       TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(owner, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_favorites_owner ON favorites(owner, created_at DESC);

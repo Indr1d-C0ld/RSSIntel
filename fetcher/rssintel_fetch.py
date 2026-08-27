@@ -162,8 +162,10 @@ def fetch_url_limited(session: requests.Session, url: str) -> Tuple[Optional[str
 
 
 def fts_delete_insert(cur: sqlite3.Cursor, item_id: int, title: str, body: str, link: str, feed_title: str) -> None:
-    # FTS5-safe (niente UPSERT)
-    cur.execute("INSERT INTO items_fts(items_fts, rowid) VALUES('delete', ?)", (item_id,))
+    # items_fts e' una FTS5 self-contained (conserva il testo): la riga si
+    # rimuove con un normale DELETE per rowid, non con il comando 'delete'
+    # (che vale solo per le tabelle contentless).
+    cur.execute("DELETE FROM items_fts WHERE rowid = ?", (item_id,))
     cur.execute(
         "INSERT INTO items_fts(rowid, title, body, link, feed) VALUES(?,?,?,?,?)",
         (item_id, title or "", body or "", link or "", feed_title or ""),

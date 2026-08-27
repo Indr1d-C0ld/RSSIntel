@@ -23,11 +23,18 @@ $range = match($date_mode) {
 $date_start = $range['start'];
 $date_end   = $range['end'];
 
+// I giorni scelti dall'utente sono di calendario italiano (Europe/Rome):
+// converto gli estremi in UTC per confrontarli con le date del DB (che sono UTC).
+$tz_rome = new DateTimeZone('Europe/Rome');
+$tz_utc  = new DateTimeZone('UTC');
+$start_utc = (new DateTime($date_start . ' 00:00:00', $tz_rome))->setTimezone($tz_utc)->format('Y-m-d H:i:s');
+$end_utc   = (new DateTime($date_end   . ' 23:59:59', $tz_rome))->setTimezone($tz_utc)->format('Y-m-d H:i:s');
+
 // Costruzione query con paginazione
 // COALESCE: gli item senza published_at (feed che non lo espone) usano fetched_at,
 // altrimenti sparirebbero dalla vista cronologica.
 $where = "COALESCE(i.published_at, i.fetched_at) BETWEEN :start AND :end";
-$params = [':start' => $date_start, ':end' => $date_end . ' 23:59:59'];
+$params = [':start' => $start_utc, ':end' => $end_utc];
 if ($feed_id) {
     $where .= " AND i.feed_id = :feed";
     $params[':feed'] = $feed_id;
@@ -105,7 +112,7 @@ while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
       <div class="grow">
         <b><?=$total?> articoli</b>
         <span class="meta">
-          dal <?=h($date_start)?> al <?=h($date_end)?>
+          dal <?=h(fmt_day($date_start))?> al <?=h(fmt_day($date_end))?>
           <?php if ($feed_id): ?> · feed filtrato<?php endif; ?>
         </span>
       </div>
@@ -139,7 +146,7 @@ while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
             <?php endif; ?>
 
             <div class="meta result-meta">
-              <?=h($item['published_at'] ?: $item['fetched_at'])?>
+              <?=h(fmt_dt($item['published_at'] ?: $item['fetched_at']))?>
               <?php if (!empty($item['link'])): ?>
                 · <a href="<?=h($item['link'])?>" target="_blank">Apri fonte</a>
               <?php endif; ?>

@@ -11,10 +11,11 @@ function render_header(string $title, string $active = ''): void {
   $u = auth_user();
 
   $links = [
-    'browse' => ['browse.php', '📰 Lettura'],
-    'search' => ['search.php', 'Ricerca'],
-    'notes'  => ['notes.php',  'Annotazioni'],
-    'feeds'  => ['feeds.php',  'Feeds'],
+    'browse'    => ['browse.php',    '📰 Lettura'],
+    'search'    => ['search.php',    'Ricerca'],
+    'favorites' => ['favorites.php', '★ Favoriti'],
+    'notes'     => ['notes.php',     'Annotazioni'],
+    'feeds'     => ['feeds.php',     'Feeds'],
   ];
   if ($u && $u['role'] === 'admin') {
     $links['users'] = ['users.php', 'Utenti'];

@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
-import os, sqlite3
+import os, sqlite3, gzip
 
-DB = os.environ.get("RSSINTEL_DB", "/var/lib/rssintel/rssintel.db")
+DB = os.environ.get("RSSINTEL_DB", "/var/lib/rssintel/rssintel.db")  # override via env
+
+
+def read_text(path: str) -> str:
+    """Legge il testo estratto, decomprimendo i .gz (il fetcher salva .txt.gz)."""
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        if path.endswith(".gz"):
+            with gzip.open(path, "rt", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    except OSError:
+        return ""
+
 
 def main():
     con = sqlite3.connect(DB)
@@ -17,14 +32,11 @@ def main():
       ORDER BY i.id
     """).fetchall()
 
-    n=0
+    n = 0
     for item_id, title, link, feed_title, text_path in rows:
-        body=""
-        if text_path and os.path.isfile(text_path):
-            with open(text_path, "r", encoding="utf-8", errors="ignore") as f:
-                body = f.read()
-        # delete + insert (FTS5-safe)
-        cur.execute("INSERT INTO items_fts(items_fts, rowid) VALUES('delete', ?)", (item_id,))
+        body = read_text(text_path)
+        # FTS5 self-contained: DELETE per rowid + INSERT (idempotente se rilanciato).
+        cur.execute("DELETE FROM items_fts WHERE rowid = ?", (item_id,))
         cur.execute("INSERT INTO items_fts(rowid, title, body, link, feed) VALUES(?,?,?,?,?)",
                     (item_id, title, body, link, feed_title))
         n += 1
@@ -34,6 +46,7 @@ def main():
     con.commit()
     print(f"done. reindexed={n}")
     con.close()
+
 
 if __name__ == "__main__":
     main()

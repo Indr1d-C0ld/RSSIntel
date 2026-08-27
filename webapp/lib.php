@@ -39,6 +39,29 @@ function h(string $s): string {
   return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+/**
+ * Data/ora del DB (UTC) formattata all'italiana nel fuso di Roma.
+ *   fmt_dt('2026-08-27 21:14:34')        -> '27/08/2026 23:14'
+ *   fmt_dt('2026-08-27 21:14:34', false) -> '27/08/2026'
+ * Stringa vuota o non parsabile -> ritorna il valore grezzo (o '').
+ */
+function fmt_dt(?string $s, bool $with_time = true): string {
+  $s = trim((string)$s);
+  if ($s === '' || str_starts_with($s, '0000-00-00')) return '';
+  try {
+    $dt = new DateTime($s, new DateTimeZone('UTC'));
+    $dt->setTimezone(new DateTimeZone('Europe/Rome'));
+    return $dt->format($with_time ? 'd/m/Y H:i' : 'd/m/Y');
+  } catch (Throwable $e) {
+    return $s;
+  }
+}
+
+/** Giorno di calendario 'AAAA-MM-GG' -> 'GG/MM/AAAA' (nessuna conversione di fuso). */
+function fmt_day(string $s): string {
+  return preg_match('~^(\d{4})-(\d{2})-(\d{2})~', $s, $m) ? "$m[3]/$m[2]/$m[1]" : $s;
+}
+
 /* =====================  Sessione + CSRF  ===================== */
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -87,6 +110,36 @@ function users_schema(): string {
 
 function users_ensure(SQLite3 $dbw): void {
   $dbw->exec(users_schema());
+}
+
+/** DDL della tabella favoriti (creata anche a runtime da favorites.php). */
+function favorites_schema(): string {
+  return "
+    CREATE TABLE IF NOT EXISTS favorites (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner      TEXT NOT NULL,
+      item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      note       TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(owner, item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_favorites_owner ON favorites(owner, created_at DESC);
+  ";
+}
+
+function favorites_ensure(SQLite3 $dbw): void {
+  $dbw->exec(favorites_schema());
+}
+
+/** true se l'utente corrente ha gia' nei favoriti l'item indicato. */
+function is_favorite(SQLite3 $db, int $item_id): bool {
+  if (!$db->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='favorites'")) {
+    return false;
+  }
+  $st = $db->prepare("SELECT 1 FROM favorites WHERE owner = :o AND item_id = :i");
+  $st->bindValue(':o', current_user(), SQLITE3_TEXT);
+  $st->bindValue(':i', $item_id, SQLITE3_INTEGER);
+  return (bool)$st->execute()->fetchArray(SQLITE3_ASSOC);
 }
 
 /** true se la tabella users esiste. */

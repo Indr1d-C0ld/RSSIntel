@@ -168,9 +168,9 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) $users[] = $r;
             <?php if ((int)$u['disabled'] === 1): ?><span class="badge">disabilitato</span><?php endif; ?>
             <?php if ($self): ?><span class="badge">tu</span><?php endif; ?>
             <div class="meta" style="margin-top:6px">
-              creato: <?=h((string)($u['created_at'] ?? 'n/d'))?>
+              creato: <?=h(fmt_dt((string)($u['created_at'] ?? '')) ?: 'n/d')?>
               <?php if (!empty($u['created_by'])): ?> da <?=h((string)$u['created_by'])?><?php endif; ?>
-              · ultimo accesso: <?=h((string)($u['last_login_at'] ?: 'mai'))?>
+              · ultimo accesso: <?=h(fmt_dt((string)$u['last_login_at']) ?: 'mai')?>
             </div>
           </div>
         </div>

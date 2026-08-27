@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-08-28 — Data IT, paginazione, snippet FTS, CSP, Favoriti
+
+- **Formato data italiano** ovunque nel portale: nuovi `fmt_dt()` / `fmt_day()`
+  in `lib.php` (le date del DB sono UTC -> mostrate come `GG/MM/AAAA HH:MM`
+  nel fuso `Europe/Rome`). Applicato in `browse.php`, `search.php`, `item.php`,
+  `notes.php`, `feeds.php`, `users.php`. `browse.php` converte anche gli estremi
+  del filtro giorno/settimana/mese da giorno di calendario italiano a intervallo
+  UTC per la query.
+- **Paginazione in `search.php`**: conteggio totale dei risultati + `?page=N`
+  con navigazione (Prec / numeri / Succ), preservando `q` / `feed_id` / limite;
+  il selettore diventa "risultati per pagina". Blocco query rifattorizzato
+  (closure condivisa, meno duplicazione).
+- **FTS con testo conservato**: `items_fts` non e' piu' `content=''`
+  (self-contained) -> `snippet()` restituisce estratti reali con le parole
+  evidenziate nei risultati di ricerca. `schema.sql` aggiornato. I file del
+  fetcher usano ora `DELETE FROM items_fts WHERE rowid = ?` invece del comando
+  `'delete'` (valido solo per le tabelle contentless);
+  `rssintel_rebuild_fts.py` ora decomprime i `.txt.gz` (prima leggeva i byte
+  gzip come testo).
+- **CSP** (`.htaccess` / `deploy/htaccess.sample`): aggiunto
+  `Content-Security-Policy` moderata — `default-src 'self'`; blocca risorse
+  esterne, framing, plugin ed esfiltrazione via form; `'unsafe-inline'` resta
+  per script/handler/stili inline.
+- **Sezione Favoriti**: nuova `webapp/favorites.php` (elenco per-utente degli
+  articoli salvati, con nota personale modificabile in linea; azioni POST
+  add/remove/note con pattern PRG). `webapp/item.php`: pulsante toggle
+  `Aggiungi ai favoriti` / `rimuovi` nella card Dettagli. `webapp/nav.php`:
+  nuova voce **★ Favoriti**. `lib.php`: `favorites_schema()`,
+  `favorites_ensure()`, `is_favorite()`. `schema.sql`: tabella `favorites`
+  (`owner`, `item_id` con `ON DELETE CASCADE`, `note`, `created_at`,
+  `UNIQUE(owner, item_id)`). Disponibile a tutti i ruoli (favoriti personali).
+
 ## 2026-08-27 — Multi-utente e ruoli
 
 - Autenticazione applicativa (niente piu' Basic Auth). Nuova tabella
