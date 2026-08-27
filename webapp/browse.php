@@ -22,7 +22,9 @@ $date_start = $range['start'];
 $date_end   = $range['end'];
 
 // Costruzione query con paginazione
-$where = "i.published_at BETWEEN :start AND :end";
+// COALESCE: gli item senza published_at (feed che non lo espone) usano fetched_at,
+// altrimenti sparirebbero dalla vista cronologica.
+$where = "COALESCE(i.published_at, i.fetched_at) BETWEEN :start AND :end";
 $params = [':start' => $date_start, ':end' => $date_end . ' 23:59:59'];
 if ($feed_id) {
     $where .= " AND i.feed_id = :feed";
@@ -47,7 +49,7 @@ $sql = "
     FROM items i
     JOIN feeds f ON f.id = i.feed_id
     WHERE $where
-    ORDER BY i.published_at DESC, i.id DESC
+    ORDER BY COALESCE(i.published_at, i.fetched_at) DESC, i.id DESC
     LIMIT :limit OFFSET :offset
 ";
 $stmt = $db->prepare($sql);

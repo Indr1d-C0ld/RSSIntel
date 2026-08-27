@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-27 — browse.php: item senza published_at
+
+- `webapp/browse.php`: filtro e ordinamento della vista cronologica passano da
+  `i.published_at` a `COALESCE(i.published_at, i.fetched_at)`. Gli item il cui
+  feed non espone la data di pubblicazione non vengono piu' esclusi dalla vista
+  (usano `fetched_at` come ripiego, coerente col template che gia' mostra
+  `published_at ?: fetched_at`). Nessun effetto sul dataset attuale (0 item con
+  `published_at` NULL); modifica difensiva.
+
 ## 2026-08-27 — Fix sicurezza (2)
 
 - `webapp/search.php`: escaping difensivo dell'output di `snippet()`. La query
