@@ -35,7 +35,7 @@ if ($q !== '') {
     $sql = "
       SELECT i.id, i.title, i.link, i.published_at, i.fetched_at,
              COALESCE(f.title, f.url) AS feed_title,
-             snippet(items_fts, 1, '<mark>', '</mark>', '…', 18) AS snip
+             snippet(items_fts, 1, char(2), char(3), '…', 18) AS snip
       FROM items_fts
       JOIN items i ON i.id = items_fts.rowid
       JOIN feeds f ON f.id = i.feed_id
@@ -213,7 +213,8 @@ $me = current_user();
               </div>
 
               <?php if (!empty($r['snip'])): ?>
-                <div class="small result-snippet"><?=$r['snip']?></div>
+                <?php // snippet(): delimitatori char(2)/char(3), escape completo, poi <mark> reali ?>
+                <div class="small result-snippet"><?= str_replace(["\x02", "\x03"], ['<mark>', '</mark>'], h((string)$r['snip'])) ?></div>
               <?php endif; ?>
             </div>
           </div>
