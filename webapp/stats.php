@@ -17,7 +17,7 @@ function q1(SQLite3 $db, string $sql): int {
 }
 /** Barra proporzionale (CSS inline, nessuna dipendenza). */
 function bar(int $value, int $max, string $label = ''): string {
-  $pct = $max > 0 ? max(1, (int)round($value * 100 / $max)) : 0;
+  $pct = ($max > 0 && $value > 0) ? max(1, (int)round($value * 100 / $max)) : 0;
   $lab = $label !== '' ? $label : (string)$value;
   return '<div style="background:var(--border);border-radius:3px;overflow:hidden;height:16px;position:relative">'
        . '<div style="background:var(--red-stamp);height:16px;width:' . $pct . '%"></div>'
@@ -104,7 +104,7 @@ function human_bytes(int $b): string {
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=<?= @filemtime(__DIR__ . "/assets/style.css") ?>">
 <title>RSSIntel — Statistiche</title>
 
 <?php render_header('RSSIntel — Statistiche', 'stats'); ?>
@@ -179,26 +179,26 @@ function human_bytes(int $b): string {
   <div class="card">
     <b>Per feed</b> <span class="meta">(<?=count($per_feed)?> feed)</span>
     <hr>
-    <div style="overflow-x:auto">
-      <table style="width:100%; border-collapse:collapse; font-size:.85rem">
-        <thead><tr style="text-align:left; border-bottom:1px solid var(--border)">
-          <th style="padding:4px 6px">Feed</th>
-          <th style="padding:4px 6px">Articoli</th>
-          <th style="padding:4px 6px; min-width:160px">Quota</th>
-          <th style="padding:4px 6px">Ultimo articolo</th>
-          <th style="padding:4px 6px">Stato</th>
+    <div class="dtable">
+      <table>
+        <thead><tr>
+          <th>Feed</th>
+          <th>Articoli</th>
+          <th style="min-width:160px">Quota</th>
+          <th>Ultimo articolo</th>
+          <th>Stato</th>
         </tr></thead>
         <tbody>
         <?php foreach ($per_feed as $f): ?>
-          <tr style="border-bottom:1px dashed var(--border)">
-            <td style="padding:4px 6px">
+          <tr>
+            <td>
               <a href="search.php?feed_id=<?= (int)$f['id'] ?>&q="><?=h((string)$f['name'])?></a>
               <?php if ((int)$f['enabled'] === 0): ?><span class="badge">off</span><?php endif; ?>
             </td>
-            <td style="padding:4px 6px"><?= (int)$f['n'] ?></td>
-            <td style="padding:4px 6px"><?= bar((int)$f['n'], $feed_max, '') ?></td>
-            <td style="padding:4px 6px" class="meta"><?=h(fmt_dt((string)$f['last_item']) ?: '—')?></td>
-            <td style="padding:4px 6px" class="meta">
+            <td><?= (int)$f['n'] ?></td>
+            <td><?= bar((int)$f['n'], $feed_max, '') ?></td>
+            <td class="meta"><?=h(fmt_dt((string)$f['last_item']) ?: '—')?></td>
+            <td class="meta">
               <?php $st = (string)($f['last_status'] ?? ''); ?>
               <?php if ($f['last_error']): ?>
                 <span style="color:var(--red-stamp)" title="<?=h((string)$f['last_error'])?>">errore (<?=h($st ?: '?')?>)</span>

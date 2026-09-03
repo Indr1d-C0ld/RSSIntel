@@ -109,18 +109,59 @@ if ((bool)$db->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND n
   while ($x = $r->fetchArray(SQLITE3_ASSOC)) $per_user[] = $x;
 }
 
-/* ---------------- geo per gli IP mostrati ---------------- */
-$geo = [];
-$ips_seen = [];
-foreach ($rows as $x)     $ips_seen[$x['ip']] = true;
-foreach ($active as $x)   $ips_seen[$x['ip']] = true;
-foreach ($per_user as $x) if (!empty($x['last_ip'])) $ips_seen[$x['last_ip']] = true;
-foreach (array_keys($ips_seen) as $ip) {
-  $g = resolve_ip_geo($db, (string)$ip);
-  $geo[$ip] = $g['country_code']
-    ? (flag_emoji($g['country_code']) . ' ' . ($g['country_name'] ?: $g['country_code']))
-    : '';
+/* ---------------- geolocalizzazione IP ---------------- */
+$geo = [];                 // ip => "IT Italia" (con bandiera) per le tabelle
+$geo_budget = 10;          // max risoluzioni nuove (ip-api.com) per caricamento
+$geo_pending = 0;
+
+if ($has_log) {
+  $ips_seen = [];
+  foreach ($rows as $x)     $ips_seen[(string)$x['ip']] = true;
+  foreach ($active as $x)   $ips_seen[(string)$x['ip']] = true;
+  foreach ($per_user as $x) if (!empty($x['last_ip'])) $ips_seen[(string)$x['last_ip']] = true;
+
+  // Con ipgeo attivo, includi anche qualche IP non ancora in cache per
+  // completare il quadro "per paese" (a caricamenti successivi la cache si riempie).
+  if (ipgeo_enabled()) {
+    $r = $db->query("SELECT DISTINCT a.ip FROM access_log a
+                     LEFT JOIN ip_geo_cache g ON g.ip = a.ip WHERE g.ip IS NULL");
+    while ($x = $r->fetchArray(SQLITE3_ASSOC)) $ips_seen[(string)$x['ip']] = true;
+  }
+
+  $cached = [];
+  $r = $db->query("SELECT ip FROM ip_geo_cache");
+  while ($x = $r->fetchArray(SQLITE3_ASSOC)) $cached[(string)$x['ip']] = true;
+
+  foreach (array_keys($ips_seen) as $ip) {
+    if (!isset($cached[$ip])) {
+      if (!ipgeo_enabled() || $geo_budget <= 0) { $geo_pending++; continue; }
+      $geo_budget--;
+    }
+    $g = resolve_ip_geo($db, $ip);
+    $geo[$ip] = $g['country_code']
+      ? (flag_emoji($g['country_code']) . ' ' . ($g['country_name'] ?: $g['country_code']))
+      : '';
+  }
 }
+
+/* aggregato "per paese" (solo IP gia' risolti in cache) */
+$by_country = [];
+$geo_nocountry = 0;
+if ($has_log) {
+  $r = $db->query("
+    SELECT g.country_code cc, g.country_name cn, COUNT(*) reqs, COUNT(DISTINCT a.ip) ips
+    FROM access_log a JOIN ip_geo_cache g ON g.ip = a.ip
+    WHERE g.country_code IS NOT NULL AND g.country_code <> ''
+    GROUP BY g.country_code ORDER BY reqs DESC
+  ");
+  while ($x = $r->fetchArray(SQLITE3_ASSOC)) $by_country[] = $x;
+  $geo_nocountry = (int)$db->querySingle("
+    SELECT COUNT(*) FROM access_log a
+    LEFT JOIN ip_geo_cache g ON g.ip = a.ip
+    WHERE g.country_code IS NULL OR g.country_code = ''
+  ");
+}
+$country_max = $by_country ? (int)$by_country[0]['reqs'] : 0;
 
 /* distinct per i filtri */
 $dUsers = []; $dPaths = [];
@@ -142,11 +183,16 @@ function sc_style(int $c): string {
   if ($c >= 300) return 'color:var(--ink-muted)';
   return '';
 }
+function bar_pct(int $v, int $max): string {
+  $p = ($max > 0 && $v > 0) ? max(1, (int)round($v * 100 / $max)) : 0;
+  return '<div style="background:var(--border);border-radius:3px;height:14px;overflow:hidden">'
+       . '<div style="background:var(--red-stamp);height:14px;width:' . $p . '%"></div></div>';
+}
 ?>
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=<?= @filemtime(__DIR__ . "/assets/style.css") ?>">
 <title>RSSIntel — Accessi</title>
 
 <?php render_header('RSSIntel — Accessi', 'accessi'); ?>
@@ -159,27 +205,27 @@ function sc_style(int $c): string {
     <?php if (!$active): ?>
       <div class="meta">Nessuna attività negli ultimi 5 minuti.</div>
     <?php else: ?>
-      <div style="overflow-x:auto">
-        <table style="width:100%; border-collapse:collapse; font-size:.85rem">
-          <thead><tr style="text-align:left; border-bottom:1px solid var(--border)">
-            <th style="padding:4px 6px">Utente</th><th style="padding:4px 6px">Ruolo</th>
-            <th style="padding:4px 6px">IP</th><th style="padding:4px 6px">Paese</th>
-            <th style="padding:4px 6px">Ultima pagina</th><th style="padding:4px 6px">Quando</th>
-            <th style="padding:4px 6px">Richieste</th>
+      <div class="dtable">
+        <table>
+          <thead><tr>
+            <th>Utente</th><th class="col-sec">Ruolo</th>
+            <th>IP</th><th class="col-sec">Paese</th>
+            <th>Ultima pagina</th><th class="col-sec">Quando</th>
+            <th class="col-sec">Richieste</th>
           </tr></thead>
           <tbody>
           <?php foreach ($active as $a): ?>
-            <tr style="border-bottom:1px dashed var(--border)">
-              <td style="padding:4px 6px"><?=h((string)($a['username'] ?: '—'))?></td>
-              <td style="padding:4px 6px"><?php if ($a['role']): ?><span class="badge"><?=h((string)$a['role'])?></span><?php endif; ?></td>
-              <td style="padding:4px 6px; white-space:nowrap">
+            <tr>
+              <td><?=h((string)($a['username'] ?: '—'))?></td>
+              <td class="col-sec"><?php if ($a['role']): ?><span class="badge"><?=h((string)$a['role'])?></span><?php endif; ?></td>
+              <td class="nowrap">
                 <?=h((string)$a['ip'])?>
                 <a href="https://ipinfo.io/<?=urlencode((string)$a['ip'])?>" target="_blank" title="ipinfo.io">🔍</a>
               </td>
-              <td style="padding:4px 6px"><?=h((string)($geo[$a['ip']] ?? ''))?></td>
-              <td style="padding:4px 6px" class="meta"><?=h((string)$a['method'])?> <?=h((string)$a['path'])?></td>
-              <td style="padding:4px 6px" class="meta"><?=h(fmt_dt((string)$a['ts']))?></td>
-              <td style="padding:4px 6px"><?= (int)$a['reqs'] ?></td>
+              <td class="col-sec"><?=h((string)($geo[$a['ip']] ?? ''))?></td>
+              <td class="meta"><?=h((string)$a['method'])?> <?=h((string)$a['path'])?></td>
+              <td class="meta col-sec"><?=h(fmt_dt((string)$a['ts']))?></td>
+              <td class="col-sec"><?= (int)$a['reqs'] ?></td>
             </tr>
           <?php endforeach; ?>
           </tbody>
@@ -212,6 +258,40 @@ function sc_style(int $c): string {
   </div>
 
   <div class="card">
+    <b>Accessi per paese</b>
+    <?php if (!ipgeo_enabled()): ?>
+      <span class="meta">— geolocalizzazione disattivata</span>
+    <?php elseif ($geo_pending > 0): ?>
+      <span class="meta">— <?= (int)$geo_pending ?> IP ancora da risolvere: ricarica la pagina</span>
+    <?php endif; ?>
+    <hr>
+    <?php if (!$by_country): ?>
+      <div class="meta">
+        <?php if (!ipgeo_enabled()): ?>
+          Imposta <code>'ipgeo' =&gt; true</code> in <code>config.php</code> per risolvere i paesi.
+        <?php else: ?>
+          Nessun IP pubblico ancora geolocalizzato (ricarica finché <code>IP da risolvere</code> arriva a 0).
+        <?php endif; ?>
+      </div>
+    <?php else: ?>
+      <?php foreach ($by_country as $c): ?>
+        <div class="row" style="gap:8px; margin:3px 0">
+          <span class="meta" style="width:160px; flex:none">
+            <?=h(flag_emoji((string)$c['cc']))?> <?=h((string)($c['cn'] ?: $c['cc']))?>
+          </span>
+          <span class="grow"><?= bar_pct((int)$c['reqs'], $country_max) ?></span>
+          <span class="meta" style="flex:none; white-space:nowrap"><?= (int)$c['reqs'] ?> req · <?= (int)$c['ips'] ?> IP</span>
+        </div>
+      <?php endforeach; ?>
+      <?php if ($geo_nocountry > 0): ?>
+        <div class="meta" style="margin-top:8px">
+          <?= number_format($geo_nocountry, 0, ',', '.') ?> richieste da IP di rete locale o non geolocalizzabili.
+        </div>
+      <?php endif; ?>
+    <?php endif; ?>
+  </div>
+
+  <div class="card">
     <b>Log accessi</b> <span class="meta">(<?= number_format($total, 0, ',', '.') ?> righe nel filtro)</span>
     <hr>
     <form method="get" class="row" style="gap:8px; flex-wrap:wrap">
@@ -235,39 +315,38 @@ function sc_style(int $c): string {
     </form>
 
     <hr>
-    <div style="overflow-x:auto">
-      <table style="width:100%; border-collapse:collapse; font-size:.82rem">
-        <thead><tr style="text-align:left; border-bottom:1px solid var(--border)">
-          <th style="padding:4px 6px">Data/ora</th>
-          <th style="padding:4px 6px">IP</th>
-          <th style="padding:4px 6px">Paese</th>
-          <th style="padding:4px 6px">Utente</th>
-          <th style="padding:4px 6px">Ruolo</th>
-          <th style="padding:4px 6px">Pagina</th>
-          <th style="padding:4px 6px">M.</th>
-          <th style="padding:4px 6px">St.</th>
-          <th style="padding:4px 6px">User agent</th>
+    <div class="dtable">
+      <table>
+        <thead><tr>
+          <th>Data/ora</th>
+          <th>IP</th>
+          <th class="col-sec">Paese</th>
+          <th>Utente</th>
+          <th class="col-sec">Ruolo</th>
+          <th>Pagina</th>
+          <th class="col-sec">M.</th>
+          <th>St.</th>
+          <th class="col-sec">User agent</th>
         </tr></thead>
         <tbody>
         <?php foreach ($rows as $x): ?>
-          <tr style="border-bottom:1px dashed var(--border)">
-            <td style="padding:4px 6px; white-space:nowrap"><?=h(fmt_dt((string)$x['ts']))?></td>
-            <td style="padding:4px 6px; white-space:nowrap">
+          <tr>
+            <td style="white-space:nowrap"><?=h(fmt_dt((string)$x['ts']))?></td>
+            <td style="white-space:nowrap">
               <?=h((string)$x['ip'])?>
               <a href="https://ipinfo.io/<?=urlencode((string)$x['ip'])?>" target="_blank" title="ipinfo.io">🔍</a>
             </td>
-            <td style="padding:4px 6px"><?=h((string)($geo[$x['ip']] ?? ''))?></td>
-            <td style="padding:4px 6px"><?=h((string)($x['username'] ?: '—'))?></td>
-            <td style="padding:4px 6px"><?php if ($x['role']): ?><span class="badge"><?=h((string)$x['role'])?></span><?php endif; ?></td>
-            <td style="padding:4px 6px"><?=h((string)$x['path'])?><?= $x['query_string'] ? h('?' . $x['query_string']) : '' ?></td>
-            <td style="padding:4px 6px"><?=h((string)$x['method'])?></td>
-            <td style="padding:4px 6px; <?= sc_style((int)$x['status_code']) ?>"><?= (int)$x['status_code'] ?: '—' ?></td>
-            <td style="padding:4px 6px; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"
-                class="meta" title="<?=h((string)$x['user_agent'])?>"><?=h((string)($x['user_agent'] ?: '—'))?></td>
+            <td class="col-sec"><?=h((string)($geo[$x['ip']] ?? ''))?></td>
+            <td><?=h((string)($x['username'] ?: '—'))?></td>
+            <td class="col-sec"><?php if ($x['role']): ?><span class="badge"><?=h((string)$x['role'])?></span><?php endif; ?></td>
+            <td><?=h((string)$x['path'])?><?= $x['query_string'] ? h('?' . $x['query_string']) : '' ?></td>
+            <td class="col-sec"><?=h((string)$x['method'])?></td>
+            <td style="<?= sc_style((int)$x['status_code']) ?>"><?= (int)$x['status_code'] ?: '—' ?></td>
+            <td class="ua-cell col-sec meta" title="<?=h((string)$x['user_agent'])?>"><?=h((string)($x['user_agent'] ?: '—'))?></td>
           </tr>
         <?php endforeach; ?>
         <?php if (!$rows): ?>
-          <tr><td colspan="9" class="meta" style="padding:10px; text-align:center">Nessun accesso registrato per il filtro corrente.</td></tr>
+          <tr><td colspan="9" class="meta" style="text-align:center">Nessun accesso registrato per il filtro corrente.</td></tr>
         <?php endif; ?>
         </tbody>
       </table>
@@ -296,27 +375,27 @@ function sc_style(int $c): string {
         <?php endforeach; ?>
       </div>
     <?php endif; ?>
-    <div style="overflow-x:auto">
-      <table style="width:100%; border-collapse:collapse; font-size:.85rem">
-        <thead><tr style="text-align:left; border-bottom:1px solid var(--border)">
-          <th style="padding:4px 6px">Data/ora</th><th style="padding:4px 6px">Esito</th>
-          <th style="padding:4px 6px">Utente</th><th style="padding:4px 6px">IP</th>
+    <div class="dtable">
+      <table>
+        <thead><tr>
+          <th>Data/ora</th><th>Esito</th>
+          <th>Utente</th><th>IP</th>
         </tr></thead>
         <tbody>
         <?php foreach ($attempts as $a): ?>
-          <tr style="border-bottom:1px dashed var(--border)">
-            <td style="padding:4px 6px; white-space:nowrap"><?=h(fmt_dt((string)$a['created_at']))?></td>
-            <td style="padding:4px 6px">
+          <tr>
+            <td style="white-space:nowrap"><?=h(fmt_dt((string)$a['created_at']))?></td>
+            <td>
               <?= (int)$a['success'] === 1
                 ? '<span style="color:green">ok</span>'
                 : '<span style="color:var(--red-stamp)">fallito</span>' ?>
             </td>
-            <td style="padding:4px 6px"><?=h((string)($a['username'] ?: '—'))?></td>
-            <td style="padding:4px 6px; white-space:nowrap"><?=h((string)$a['ip'])?></td>
+            <td><?=h((string)($a['username'] ?: '—'))?></td>
+            <td style="white-space:nowrap"><?=h((string)$a['ip'])?></td>
           </tr>
         <?php endforeach; ?>
         <?php if (!$attempts): ?>
-          <tr><td colspan="4" class="meta" style="padding:10px; text-align:center">Nessun tentativo di login registrato.</td></tr>
+          <tr><td colspan="4" class="meta" style="text-align:center">Nessun tentativo di login registrato.</td></tr>
         <?php endif; ?>
         </tbody>
       </table>
@@ -326,27 +405,27 @@ function sc_style(int $c): string {
   <div class="card">
     <b>Per utente</b>
     <hr>
-    <div style="overflow-x:auto">
-      <table style="width:100%; border-collapse:collapse; font-size:.85rem">
-        <thead><tr style="text-align:left; border-bottom:1px solid var(--border)">
-          <th style="padding:4px 6px">Utente</th><th style="padding:4px 6px">Ruolo</th>
-          <th style="padding:4px 6px">Ultimo accesso</th><th style="padding:4px 6px">Ultimo IP</th>
-          <th style="padding:4px 6px">Richieste</th><th style="padding:4px 6px">IP distinti</th>
-          <th style="padding:4px 6px">Ultima attività</th>
+    <div class="dtable">
+      <table>
+        <thead><tr>
+          <th>Utente</th><th>Ruolo</th>
+          <th>Ultimo accesso</th><th class="col-sec">Ultimo IP</th>
+          <th class="col-sec">Richieste</th><th class="col-sec">IP distinti</th>
+          <th>Ultima attività</th>
         </tr></thead>
         <tbody>
         <?php foreach ($per_user as $u): ?>
-          <tr style="border-bottom:1px dashed var(--border)">
-            <td style="padding:4px 6px"><?=h((string)$u['username'])?><?php if ((int)$u['disabled'] === 1): ?> <span class="badge">off</span><?php endif; ?></td>
-            <td style="padding:4px 6px"><span class="badge"><?=h((string)$u['role'])?></span></td>
-            <td style="padding:4px 6px" class="meta"><?=h(fmt_dt((string)$u['last_login_at']) ?: 'mai')?></td>
-            <td style="padding:4px 6px; white-space:nowrap" class="meta">
+          <tr>
+            <td><?=h((string)$u['username'])?><?php if ((int)$u['disabled'] === 1): ?> <span class="badge">off</span><?php endif; ?></td>
+            <td><span class="badge"><?=h((string)$u['role'])?></span></td>
+            <td class="meta"><?=h(fmt_dt((string)$u['last_login_at']) ?: 'mai')?></td>
+            <td class="col-sec meta" style="white-space:nowrap">
               <?=h((string)($u['last_ip'] ?: '—'))?>
               <?php if (!empty($u['last_ip']) && !empty($geo[$u['last_ip']])): ?> <?=h((string)$geo[$u['last_ip']])?><?php endif; ?>
             </td>
-            <td style="padding:4px 6px"><?= (int)$u['reqs'] ?></td>
-            <td style="padding:4px 6px"><?= (int)$u['ips'] ?></td>
-            <td style="padding:4px 6px" class="meta"><?=h(fmt_dt((string)$u['last_seen']) ?: '—')?></td>
+            <td class="col-sec"><?= (int)$u['reqs'] ?></td>
+            <td class="col-sec"><?= (int)$u['ips'] ?></td>
+            <td class="meta"><?=h(fmt_dt((string)$u['last_seen']) ?: '—')?></td>
           </tr>
         <?php endforeach; ?>
         </tbody>

@@ -230,7 +230,7 @@ function saved_url(array $s): string {
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=<?= @filemtime(__DIR__ . "/assets/style.css") ?>">
 <title>RSSIntel — Ricerca</title>
 
 <?php render_header('RSSIntel — Ricerca', 'search'); ?>

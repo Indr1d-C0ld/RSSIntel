@@ -1,22 +1,9 @@
 # RSSIntel — autenticazione gestita dall'applicazione (tabella users + login.php).
-# Nessuna Basic Auth: l'accesso e' controllato da require_login() / require_role()
-# in ogni pagina PHP.
-
+# Niente Basic Auth: l'accesso e' controllato da require_login()/require_role().
 # Nega l'accesso diretto via HTTP a configurazione, database e dump SQL.
-# (La webapp li legge dal filesystem con require/SQLite, non via HTTP.)
 <FilesMatch "\.(sql|db|db-wal|db-shm|sqlite|sqlite3)$">
   Require all denied
 </FilesMatch>
 <Files "config.php">
   Require all denied
 </Files>
-
-<IfModule mod_headers.c>
-  Header always set X-Content-Type-Options "nosniff"
-  Header always set X-Frame-Options "SAMEORIGIN"
-  Header always set Referrer-Policy "same-origin"
-  # CSP moderata: blocca risorse esterne, framing, plugin ed esfiltrazione via
-  # form. 'unsafe-inline' resta necessario perche' il portale usa <script>,
-  # handler onclick/onsubmit e attributi style= inline.
-  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
-</IfModule>

@@ -14,6 +14,7 @@
   --surface: #ffffff;
   --border: #d9dade;
   --accent: #2f6feb;
+  --red-stamp: #c62828;
   --accent-contrast: #ffffff;
   --mark-bg: #fff3b0;
   --radius: 6px;
@@ -27,6 +28,7 @@
     --surface: #1f2024;
     --border: #34363b;
     --accent: #5b8def;
+    --red-stamp: #ef5350;
     --accent-contrast: #10131a;
     --mark-bg: #6b5a12;
   }
@@ -177,11 +179,62 @@ blockquote, .quote {
   border-radius: 2px;
 }
 
+/* ============================================================
+   RESPONSIVE — tablet & smartphone (regole aggiuntive)
+   ============================================================ */
+
+/* Tabelle dati: scorrono in orizzontale invece di allargare la pagina. */
+.dtable {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+.dtable table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.dtable th,
+.dtable td {
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+.dtable thead th { border-bottom: 1px solid var(--border); }
+.dtable tbody tr { border-bottom: 1px solid var(--border); }
+.dtable .nowrap { white-space: nowrap; }
+.dtable .ua-cell {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html { overflow-x: hidden; }
+.meta, .small, td, th, blockquote, .quote { overflow-wrap: break-word; }
+img, table, pre { max-width: 100%; }
+
+@media (max-width: 980px) {
+  header, .wrap { width: calc(100% - 16px); }
+}
+
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; }
 }
+
 @media (max-width: 640px) {
-  body { padding: 12px 8px; }
+  body { padding: 8px 6px; }
+  header { padding: 12px; }
+  header .meta a { display: inline-block; padding: 4px 6px; }
+  .card { padding: 12px; }
   .row { flex-direction: column; align-items: stretch; }
-  .btn, button { width: 100%; text-align: center; }
+  .btn, button, input[type="submit"], input[type="button"] {
+    width: 100%; text-align: center; min-height: 40px; padding: 10px 14px;
+  }
+  .dtable table { font-size: 0.76rem; }
+  .dtable th, .dtable td { padding: 3px 4px; }
+  .dtable .ua-cell { max-width: 130px; }
+  .dtable .col-sec { display: none; }
+  .dtable .nowrap, .dtable td[style*="nowrap"] { white-space: normal; }
+  .text-scroll { max-height: 55vh; }
 }

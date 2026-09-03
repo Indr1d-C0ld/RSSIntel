@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-09-03 (2) — Fix .htaccess, cache-bust CSS, responsive, bandiere
+
+- **Fix 500 da `.htaccess`**: rimosso il blocco `<IfModule mod_headers.c> Header
+  ... </IfModule>` — le direttive `Header` in `.htaccess` richiedono
+  `AllowOverride FileInfo` e, dopo un cambio di config Apache a livello server,
+  facevano andare in 500 ogni richiesta sotto `/rssintel/`. Gli header di
+  sicurezza (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, CSP)
+  vanno ora nel vhost: nuovo `deploy/security-headers.conf.sample`.
+- **Cache-busting del CSS**: il `<link>` di ogni pagina diventa
+  `assets/style.css?v=<?= filemtime(...) ?>`. Apache serve `style.css` senza
+  `Cache-Control`, quindi i browser (in particolare i telefoni) tenevano in
+  cache una copia vecchia e non vedevano il layout responsive. Ora l'URL
+  cambia a ogni modifica del file.
+- **Responsive tablet/smartphone** (senza toccare il desktop): tabelle dati in
+  `.dtable` con scroll orizzontale interno; colonne secondarie (`.col-sec`)
+  nascoste sotto i 640px; tap target piu' ampi; `html { overflow-x: hidden }`;
+  date/IP che vanno a capo su schermo stretto. `stats.php` e `accessi.php`:
+  tabelle rifattorizzate da stili inline a classi `.dtable`. In `accessi.php`
+  la sezione "Attivita' in corso" passa a 3 colonne sul telefono.
+- **Accessi per paese**: nuova scheda in `accessi.php` (bandiera + nome paese +
+  barra per numero richieste + IP distinti; riga "richieste da IP di rete
+  locale"). Bandiere anche nella colonna Paese delle tabelle. Risoluzione geo
+  degli IP limitata a 10 nuovi per caricamento (evita di saturare ip-api.com);
+  helper `bar_pct()`.
+- `webapp/assets/style.css` (tema neutro): stesso blocco responsive; aggiunta
+  variabile `--red-stamp` usata dalle barre di stats/accessi.
+
 ## 2026-09-03 — Sezioni Statistiche e Accessi
 
 - **Sezione Statistiche** (`webapp/stats.php`, tutti i ruoli): riepilogo

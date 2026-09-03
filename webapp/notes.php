@@ -55,7 +55,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=<?= @filemtime(__DIR__ . "/assets/style.css") ?>">
 <title>Annotazioni</title>
 
 <?php render_header('Annotazioni', 'notes'); ?>
