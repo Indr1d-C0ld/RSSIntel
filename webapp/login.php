@@ -32,8 +32,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   $username = trim((string)($_POST['username'] ?? ''));
   $password = (string)($_POST['password'] ?? '');
+  $ip = client_ip();
 
-  if ($bootstrap) {
+  // Rate-limit morbido: troppi tentativi falliti dallo stesso IP -> attesa.
+  if (!$bootstrap && recent_failed_logins($dbw, $ip, 15) >= 10) {
+    $err = 'Troppi tentativi falliti. Riprova tra qualche minuto.';
+    record_login_attempt($username, $ip, false);
+  } elseif ($bootstrap) {
     $password2 = (string)($_POST['password2'] ?? '');
     if (!preg_match('~^[A-Za-z0-9._-]{2,32}$~', $username)) {
       $err = 'Username non valido (2-32 caratteri: lettere, cifre, . _ -).';
@@ -70,8 +75,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$row || (int)$row['disabled'] === 1
         || !password_verify($password, (string)$row['password_hash'])) {
       $err = 'Credenziali non valide.';
+      record_login_attempt($username, $ip, false);
       usleep(300000); // piccolo rallentamento anti brute-force
     } else {
+      record_login_attempt($username, $ip, true);
       session_regenerate_id(true);
       $_SESSION['uid']   = (int)$row['id'];
       $_SESSION['uname'] = (string)$row['username'];

@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-09-03 — Sezioni Statistiche e Accessi
+
+- **Sezione Statistiche** (`webapp/stats.php`, tutti i ruoli): riepilogo
+  (articoli, feed attivi/totali, annotazioni, tag, favoriti, ricerche salvate,
+  utenti, dimensione DB, primo/ultimo articolo, ultimo fetch, media/giorno),
+  raccolta articoli per giorno (ultimi 30) e per mese (ultimi 12) con barre CSS
+  in ora di Roma, tabella per-feed con quota % e stato di salute
+  (last_status / last_error), tag piu' usati, annotazioni per autore.
+- **Sezione Accessi** (`webapp/accessi.php`, solo admin): attivita' in corso
+  negli ultimi 5 minuti (utente/IP attivi, ruolo, ultima pagina, n. richieste
+  — via window function su `access_log`); riepilogo (richieste totali, IP unici,
+  oggi, 24h, utenti distinti, login falliti 24h); log accessi filtrabile
+  (data da/a, utente, pagina, IP/UA) e paginato, con stato HTTP colorato e link
+  ipinfo.io; login recenti da `login_attempts` + falliti-24h per IP; scheda
+  per-utente (ultimo accesso/IP, richieste totali, IP distinti, ultima attivita').
+- **`lib.php`**: tabelle `access_log`, `login_attempts`, `ip_geo_cache` (create
+  anche a runtime); `log_access()` in `register_shutdown_function`, chiamata
+  automaticamente da `lib.php` (una riga per richiesta HTTP);
+  `record_login_attempt()`, `recent_failed_logins()`; geolocalizzazione IP
+  opzionale (`cfg()['ipgeo']`, default off) via ip-api.com con cache 30 giorni,
+  `flag_emoji()`.
+- **`login.php`**: registra ogni tentativo (riuscito/fallito); rate-limit
+  morbido — ≥10 tentativi falliti dallo stesso IP in 15 minuti bloccano
+  temporaneamente il login.
+- **`nav.php`**: nuove voci `📊 Statistiche` (tutti) e `🔐 Accessi` (admin).
+- **`schema.sql`**: tabelle `access_log`, `login_attempts`, `ip_geo_cache`.
+- **`config.sample.php`**: nuovo flag `ipgeo` (default false, documentato);
+  commento di `admins` aggiornato (legacy, i ruoli stanno nella tabella users).
+
 ## 2026-08-28 — Data IT, paginazione, snippet FTS, CSP, Favoriti
 
 - **Formato data italiano** ovunque nel portale: nuovi `fmt_dt()` / `fmt_day()`

@@ -15,10 +15,12 @@ function render_header(string $title, string $active = ''): void {
     'search'    => ['search.php',    'Ricerca'],
     'favorites' => ['favorites.php', '★ Favoriti'],
     'notes'     => ['notes.php',     'Annotazioni'],
+    'stats'     => ['stats.php',     '📊 Statistiche'],
     'feeds'     => ['feeds.php',     'Feeds'],
   ];
   if ($u && $u['role'] === 'admin') {
-    $links['users'] = ['users.php', 'Utenti'];
+    $links['users']   = ['users.php',   'Utenti'];
+    $links['accessi'] = ['accessi.php', '🔐 Accessi'];
   }
   ?>
   <header>

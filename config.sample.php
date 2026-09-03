@@ -30,7 +30,13 @@ return [
     // usato per troncare lato client e lato server. ~2000 ≈ 350 parole.
     'translate_soft_limit' => 2000,
 
-    // Username (valore di REMOTE_USER fornito dalla Basic Auth del webserver)
-    // abilitati alla gestione dei feed in feeds.php.
+    // Legacy: usato solo dal vecchio is_admin($u) prima dell'auth applicativa.
+    // Con la tabella `users` non serve piu' (i ruoli stanno nel DB); lasciato
+    // per retrocompatibilita'.
     'admins' => ['admin'],
+
+    // Geolocalizzazione degli IP nel log accessi (accessi.php): se true, gli IP
+    // vengono risolti a paese via ip-api.com (gratuito, senza API key), con
+    // cache di 30 giorni in ip_geo_cache. Chiamata fatta dal server.
+    'ipgeo' => false,
 ];

@@ -111,3 +111,42 @@ CREATE TABLE IF NOT EXISTS favorites (
   UNIQUE(owner, item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_favorites_owner ON favorites(owner, created_at DESC);
+
+-- Log accessi: una riga per richiesta HTTP (scritta in shutdown da log_access()).
+-- La webapp la crea anche a runtime.
+CREATE TABLE IF NOT EXISTS access_log (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts           TEXT NOT NULL DEFAULT (datetime('now')),
+  ip           TEXT NOT NULL DEFAULT '',
+  username     TEXT,
+  role         TEXT,
+  path         TEXT NOT NULL DEFAULT '',
+  method       TEXT NOT NULL DEFAULT '',
+  query_string TEXT,
+  status_code  INTEGER,
+  user_agent   TEXT,
+  referer      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_access_log_ts   ON access_log(ts);
+CREATE INDEX IF NOT EXISTS idx_access_log_ip   ON access_log(ip);
+CREATE INDEX IF NOT EXISTS idx_access_log_user ON access_log(username);
+CREATE INDEX IF NOT EXISTS idx_access_log_path ON access_log(path);
+
+-- Tentativi di login (riusciti e falliti): visibilita' brute-force + rate-limit.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  username   TEXT NOT NULL DEFAULT '',
+  ip         TEXT NOT NULL DEFAULT '',
+  success    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_ip   ON login_attempts(ip, created_at);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_user ON login_attempts(username, created_at);
+
+-- Cache paese per IP (risoluzione opzionale via ip-api.com se cfg()['ipgeo']).
+CREATE TABLE IF NOT EXISTS ip_geo_cache (
+  ip           TEXT PRIMARY KEY,
+  country_code TEXT,
+  country_name TEXT,
+  resolved_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
