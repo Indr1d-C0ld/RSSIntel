@@ -1,0 +1,28 @@
+@import "../base.css";
+
+/* ------------------------------------------------------------
+   TEMA: NEUTRO — nessuna messinscena, solo funzione
+   Per chi preferisce un pannello di controllo pulito a un
+   fascicolo d'archivio. Chiaro, ai margini quadrati appena
+   smussati, senza texture né timbri: l'opzione "lavoro", non
+   "atmosfera".
+   ------------------------------------------------------------ */
+:root {
+  --paper: #ffffff;
+  --paper-dark: #f2f3f5;
+  --paper-panel: #f7f7f8;
+  --ink: #1c1c1e;
+  --ink-muted: #6b7280;
+  --red-stamp: #2f6feb;
+  --red-stamp-light: #e8f0fe;
+  --border: #d9dade;
+  --border-heavy: #b7b9c0;
+  --typewriter: ui-monospace, 'SF Mono', 'Consolas', 'Liberation Mono', monospace;
+  --radius: 6px;
+  --texture: none;
+  --stripe: none;
+}
+
+.card:before { display: none; }
+header b { text-transform: none; letter-spacing: 0; border-bottom: none; font-weight: 700; }
+.btn, button, input[type="submit"], input[type="button"] { text-transform: none; letter-spacing: normal; }

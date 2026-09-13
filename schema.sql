@@ -150,3 +150,11 @@ CREATE TABLE IF NOT EXISTS ip_geo_cache (
   country_name TEXT,
   resolved_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Impostazioni globali del sito (es. 'theme'): scelte dall'admin per tutti.
+-- La webapp la crea anche a runtime (theme.php).
+CREATE TABLE IF NOT EXISTS site_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

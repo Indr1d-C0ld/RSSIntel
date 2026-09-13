@@ -192,7 +192,7 @@ function bar_pct(int $v, int $max): string {
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="assets/style.css?v=<?= @filemtime(__DIR__ . "/assets/style.css") ?>">
+<link rel="stylesheet" href="<?= h(theme_href()) ?>">
 <title>RSSIntel — Accessi</title>
 
 <?php render_header('RSSIntel — Accessi', 'accessi'); ?>

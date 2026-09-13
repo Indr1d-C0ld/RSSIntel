@@ -1,0 +1,29 @@
+@import "../base.css";
+
+/* ------------------------------------------------------------
+   TEMA: SAMIZDAT — copia clandestina, carta carbone
+   Blocco dell'Est, anni '70-'80. Carta economica ingrigita,
+   inchiostro violaceo da carta carbone/ciclostile, nessun timbro
+   ufficiale — solo una copia fatta circolare a mano. Più povero
+   e nervoso del Dossier Vintage: meno "ufficio", più sotterraneo.
+   ------------------------------------------------------------ */
+:root {
+  --paper: #e7e4de;
+  --paper-dark: #d7d3c9;
+  --paper-panel: #f2f0ea;
+  --ink: #2a2733;
+  --ink-muted: #635f6c;
+  --red-stamp: #4c3f7a;
+  --red-stamp-light: #e6e2f2;
+  --border: #c3beb3;
+  --border-heavy: #948d7c;
+  --typewriter: 'Courier New', 'Courier', 'Consolas', 'Liberation Mono', monospace;
+  --radius: 0px;
+  --texture: repeating-linear-gradient(135deg, rgba(40,30,20,0.035) 0px, rgba(40,30,20,0.035) 1px, transparent 1px, transparent 4px);
+  --stripe: repeating-linear-gradient(90deg, var(--red-stamp), var(--red-stamp) 4px, transparent 4px, transparent 9px);
+}
+
+/* copia sbiadita: leggero "doppio battito" sui titoli, come un nastro consumato */
+header b, .card > b:first-child {
+  text-shadow: 0.6px 0 0 rgba(76,63,122,0.25);
+}

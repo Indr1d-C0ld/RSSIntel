@@ -1,0 +1,23 @@
+@import "../base.css";
+
+/* ------------------------------------------------------------
+   TEMA: DOSSIER VINTAGE — Europa occidentale, anni '40-'50
+   Fascicolo d'archivio su carta invecchiata, timbro rosso
+   "confidenziale", macchina da scrivere. Il tema storico di
+   RSSIntel — caldo, cartaceo, da schedario di un ufficio stampa.
+   ------------------------------------------------------------ */
+:root {
+  --paper: #f2e6d8;
+  --paper-dark: #e2d4c2;
+  --paper-panel: #fefaf2;
+  --ink: #2c2418;
+  --ink-muted: #5c4f3a;
+  --red-stamp: #b13b2d;
+  --red-stamp-light: #f6e4e1;
+  --border: #c9bbaa;
+  --border-heavy: #a3927c;
+  --typewriter: 'Courier New', 'Courier', 'American Typewriter', 'IBM Plex Mono', monospace;
+  --radius: 0px;
+  --texture: radial-gradient(circle at 20% 30%, rgba(0,0,0,0.03) 1px, transparent 1px);
+  --stripe: repeating-linear-gradient(90deg, var(--red-stamp), var(--red-stamp) 10px, transparent 10px, transparent 20px);
+}

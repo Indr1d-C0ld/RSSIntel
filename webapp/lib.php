@@ -384,5 +384,91 @@ function resolve_ip_geo(SQLite3 $dbw, string $ip): array {
   }
 }
 
+/* =====================  Tema grafico (scelto dall'admin per tutti)  ===================== */
+
+/**
+ * Temi disponibili: chiave file (assets/themes/<chiave>.css) => [nome, descrizione].
+ * Aggiungere un tema = aggiungere un file CSS + una riga qui.
+ */
+function available_themes(): array {
+  // key => [nome, descrizione, colore-carta, colore-inchiostro, colore-timbro, colore-muto]
+  return [
+    'dossier-vintage' => ['Dossier Vintage', "Fascicolo d'archivio anni '40-'50: carta invecchiata, timbro rosso confidenziale.",
+      '#f2e6d8', '#2c2418', '#b13b2d', '#5c4f3a'],
+    'samizdat'        => ['Samizdat', 'Copia clandestina su carta carbone: grigia, violacea, nervosa — il tema storico di RSSIntel.',
+      '#e7e4de', '#2a2733', '#4c3f7a', '#635f6c'],
+    'archivio-stato'  => ['Archivio di Stato', 'Burocrazia da Guerra Fredda: cartellina manila, timbro protocollo verde-petrolio.',
+      '#eee6cf', '#2a2a24', '#1f5c52', '#5b5644'],
+    'redacted'        => ['Redacted', 'Fotocopia di un documento declassificato: fondo quasi nero, inchiostro ambra, censure piene.',
+      '#171410', '#e3d6a8', '#c23b2e', '#8c8266'],
+    'telex'           => ['Telex', 'Sala macchine, monitor a fosfori verdi: monocromo, scanline, per leggere di notte.',
+      '#0a1410', '#8fe6ac', '#39ff6a', '#4f8f66'],
+    'neutro'          => ['Neutro', 'Nessuna messinscena: pannello di controllo chiaro, senza texture ne timbri.',
+      '#ffffff', '#1c1c1e', '#2f6feb', '#6b7280'],
+  ];
+}
+
+const RSSINTEL_DEFAULT_THEME = 'dossier-vintage';
+
+function site_settings_schema(): string {
+  return "
+    CREATE TABLE IF NOT EXISTS site_settings (
+      key        TEXT PRIMARY KEY,
+      value      TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  ";
+}
+
+function site_settings_ensure(SQLite3 $dbw): void {
+  $dbw->exec(site_settings_schema());
+}
+
+/** Tema attivo per l'intero sito (scelto dall'admin), con fallback sicuro. */
+function active_theme(): string {
+  static $t = null;
+  if ($t !== null) return $t;
+  $themes = available_themes();
+  try {
+    $db = db_ro();
+    if ($db->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_settings'")) {
+      $st = $db->prepare("SELECT value FROM site_settings WHERE key = 'theme'");
+      $v = $st->execute()->fetchArray(SQLITE3_ASSOC);
+      if ($v && isset($themes[$v['value']])) {
+        $t = $v['value'];
+        return $t;
+      }
+    }
+  } catch (Throwable $e) {
+    // ignora: ripiega sul default
+  }
+  $t = RSSINTEL_DEFAULT_THEME;
+  return $t;
+}
+
+/** Imposta il tema del sito (richiede ruolo admin: controllato dal chiamante). */
+function set_active_theme(SQLite3 $dbw, string $theme): void {
+  site_settings_ensure($dbw);
+  $st = $dbw->prepare("
+    INSERT INTO site_settings(key, value, updated_at) VALUES('theme', :v, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  ");
+  $st->bindValue(':v', $theme, SQLITE3_TEXT);
+  $st->execute();
+}
+
+/** URL (con cache-bust) del foglio di stile del tema attivo, per il tag <link>. */
+function theme_href(): string {
+  $t = active_theme();
+  $file = __DIR__ . '/assets/themes/' . $t . '.css';
+  $base = __DIR__ . '/assets/base.css';
+  if (!is_file($file)) {
+    $t = RSSINTEL_DEFAULT_THEME;
+    $file = __DIR__ . '/assets/themes/' . $t . '.css';
+  }
+  $v = max((int)(@filemtime($file) ?: 0), (int)(@filemtime($base) ?: 0)) ?: time();
+  return 'assets/themes/' . $t . '.css?v=' . $v;
+}
+
 // Ogni pagina che include lib.php viene registrata nel log accessi.
 log_access();

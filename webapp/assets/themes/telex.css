@@ -1,0 +1,29 @@
+@import "../base.css";
+
+/* ------------------------------------------------------------
+   TEMA: TELEX — sala macchine, monitor a fosfori verdi
+   La stanza del telescrivente/microfilm reader: monocromo verde
+   su nero, scanline sottili, niente calore della carta — solo un
+   terminale che stampa quello che arriva. Il tema più "operativo"
+   e meno "archivio", per chi vuole leggere di notte.
+   ------------------------------------------------------------ */
+:root {
+  --paper: #0a1410;
+  --paper-dark: #050b08;
+  --paper-panel: #0e1c15;
+  --ink: #8fe6ac;
+  --ink-muted: #4f8f66;
+  --red-stamp: #39ff6a;
+  --red-stamp-light: #123322;
+  --border: #1d3a29;
+  --border-heavy: #2c5940;
+  --typewriter: 'Consolas', 'DejaVu Sans Mono', 'Courier New', 'Liberation Mono', monospace;
+  --radius: 0px;
+  --texture: repeating-linear-gradient(0deg, rgba(0,0,0,0.35) 0px, rgba(0,0,0,0.35) 1px, transparent 1px, transparent 3px);
+  --stripe: repeating-linear-gradient(90deg, var(--red-stamp), var(--red-stamp) 6px, transparent 6px, transparent 11px);
+}
+
+a { text-decoration: none; border-bottom: 1px dotted var(--ink-muted); }
+a:hover { border-bottom-color: var(--red-stamp); }
+mark { background: var(--red-stamp); color: #050b08; }
+::selection { background: var(--red-stamp); color: #050b08; }

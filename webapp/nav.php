@@ -21,6 +21,7 @@ function render_header(string $title, string $active = ''): void {
   if ($u && $u['role'] === 'admin') {
     $links['users']   = ['users.php',   'Utenti'];
     $links['accessi'] = ['accessi.php', '🔐 Accessi'];
+    $links['theme']   = ['theme.php',   '🎨 Tema'];
   }
   ?>
   <header>

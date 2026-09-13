@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-09-13 — Sistema multi-tema (6 stili, scelta riservata all'admin)
+
+- **`webapp/assets/base.css`** (nuovo): tutto il CSS strutturale/responsive
+  estratto dal vecchio `style.css` unico, parametrizzato su un contratto di
+  variabili comune (`--paper`, `--paper-dark`, `--paper-panel`, `--ink`,
+  `--ink-muted`, `--red-stamp`, `--red-stamp-light`, `--border`,
+  `--border-heavy`, `--typewriter`, `--radius`, `--texture`, `--stripe`).
+  Include anche le nuove classi `.theme-grid` / `.theme-card` /
+  `.theme-preview` per la pagina di selezione tema.
+- **`webapp/assets/themes/*.css`** (6 nuovi file, ognuno `@import
+  "../base.css"` + variabili + piccoli ritocchi decorativi): `dossier-
+  vintage.css` (l'estetica originale, resta il default), `samizdat.css`,
+  `archivio-stato.css`, `redacted.css`, `telex.css`, `neutro.css` — sei
+  varianti dello stesso registro grafico (dossier/samizdat/archivio
+  d'intelligence/macchina da scrivere guerra fredda).
+- **`webapp/theme.php`** (nuovo, solo admin): galleria dei 6 temi con
+  anteprima colori, form per attivarne uno — vale per **tutti gli utenti**,
+  scelta riservata all'admin.
+- **`webapp/lib.php`**: `available_themes()` (catalogo dei temi), tabella
+  `site_settings` (chiave/valore, creata anche a runtime) con
+  `site_settings_ensure()`, `active_theme()` (letto da `site_settings`,
+  cache statica, default `dossier-vintage`), `set_active_theme()`,
+  `theme_href()` (URL del CSS del tema attivo con cache-busting su
+  `filemtime()` del tema + di `base.css`).
+- **`webapp/nav.php`**: nuova voce `🎨 Tema` nel blocco riservato all'admin.
+- Tutte le pagine con `<link>` (`index`, `browse`, `search`, `favorites`,
+  `feeds`, `item`, `notes`, `stats`, `accessi`, `login`, `profile`, più il
+  nuovo `theme.php`) passano da `assets/style.css?v=...` a
+  `<?= h(theme_href()) ?>`, che risolve al tema attivo.
+- **`schema.sql`**: nuova tabella `site_settings`.
+- **Rimosso** `webapp/assets/style.css`: superato dal sistema di temi
+  (`base.css` + `themes/dossier-vintage.css` ne prendono il posto 1:1,
+  stesso aspetto di default).
+
 ## 2026-09-03 (2) — Fix .htaccess, cache-bust CSS, responsive, bandiere
 
 - **Fix 500 da `.htaccess`**: rimosso il blocco `<IfModule mod_headers.c> Header

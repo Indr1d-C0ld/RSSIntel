@@ -1,0 +1,32 @@
+@import "../base.css";
+
+/* ------------------------------------------------------------
+   TEMA: REDACTED — fotocopia di un documento declassificato
+   Pagina scurita come una scansione di terza generazione, testo
+   color pergamena/ambra, timbri rossi "TOP SECRET" su fondo quasi
+   nero. La barra in cima alle card diventa un blocco di censura
+   pieno invece del tratteggio: qui si legge quello che è rimasto.
+   ------------------------------------------------------------ */
+:root {
+  --paper: #171410;
+  --paper-dark: #0e0c09;
+  --paper-panel: #1f1b14;
+  --ink: #e3d6a8;
+  --ink-muted: #8c8266;
+  --red-stamp: #c23b2e;
+  --red-stamp-light: #3a1d1a;
+  --border: #362f22;
+  --border-heavy: #4d4330;
+  --typewriter: 'Courier New', 'Courier', 'IBM Plex Mono', 'Consolas', monospace;
+  --radius: 0px;
+  --texture: repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 3px);
+  --stripe: var(--paper-dark);
+}
+
+/* blocco di redazione pieno invece del tratteggio, con un piccolo taglio rosso */
+.card:before {
+  height: 6px;
+  background: repeating-linear-gradient(90deg, #0a0906 0px, #0a0906 26px, var(--red-stamp) 26px, var(--red-stamp) 30px);
+}
+mark { background: var(--red-stamp); color: #0e0c09; }
+::selection { background: var(--red-stamp); color: #0e0c09; }

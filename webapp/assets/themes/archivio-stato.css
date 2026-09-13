@@ -1,0 +1,30 @@
+@import "../base.css";
+
+/* ------------------------------------------------------------
+   TEMA: ARCHIVIO DI STATO — burocrazia da Guerra Fredda
+   Cartellina color manila, protocollo e timbro istituzionale in
+   verde-petrolio (non il rosso da spionaggio, ma l'inchiostro dei
+   bolli d'ufficio). Più "ministero" e "faldone numerato" che
+   "agente sul campo": ordinato, squadrato, un po' impolverato.
+   ------------------------------------------------------------ */
+:root {
+  --paper: #eee6cf;
+  --paper-dark: #ded1a7;
+  --paper-panel: #f7f0dc;
+  --ink: #2a2a24;
+  --ink-muted: #5b5644;
+  --red-stamp: #1f5c52;
+  --red-stamp-light: #dcece6;
+  --border: #c7b98e;
+  --border-heavy: #998a5c;
+  --typewriter: 'Courier New', 'Courier', 'Nimbus Mono PS', 'Liberation Mono', monospace;
+  --radius: 0px;
+  --texture: repeating-linear-gradient(0deg, rgba(0,0,0,0.02) 0px, transparent 1px, transparent 23px, rgba(0,0,0,0.02) 24px);
+  --stripe: repeating-linear-gradient(90deg, var(--red-stamp), var(--red-stamp) 14px, var(--paper-dark) 14px, var(--paper-dark) 16px);
+}
+
+/* doppio bordo da modulo protocollato */
+header {
+  box-shadow: inset 0 0 0 1px var(--paper), inset 0 0 0 3px var(--border-heavy);
+}
+.card { box-shadow: 4px 4px 0 rgba(0,0,0,0.06); }
