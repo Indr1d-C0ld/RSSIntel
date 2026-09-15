@@ -1,0 +1,27 @@
+# ===========================================================================
+# Blocca la pubblicazione accidentale di file di backup lasciati dagli editor.
+#
+# Motivo (audit 2026-09-14): Apache non passa a PHP i file che non finiscono
+# in .php — un "config.php~" o un "login.php.bak" viene quindi servito come
+# TESTO, rivelando il sorgente e tutto ciò che contiene. In rssintel erano
+# esposti 17 file .php~ (HTTP 200), inclusa la logica di login.
+#
+# Questa regola è una rete di sicurezza globale: vale per tutti i vhost e per
+# tutte le cartelle, indipendentemente dai singoli .htaccess. Cancellare i
+# file resta comunque la cosa giusta da fare; questo evita che il prossimo
+# file dimenticato torni a essere leggibile.
+# ===========================================================================
+
+<FilesMatch "(~|\.(bak|old|orig|save|swp|swo|tmp|rej|dist))$">
+    Require all denied
+</FilesMatch>
+
+# Copre anche i backup numerati di alcuni editor (file.php.1, file.php~1~)
+<FilesMatch "\.(php|inc|conf|cfg|ini|env)\.[0-9]+$">
+    Require all denied
+</FilesMatch>
+
+# E i file di swap di vim, che iniziano con un punto (.file.php.swp)
+<FilesMatch "^\..*\.sw[a-p]$">
+    Require all denied
+</FilesMatch>

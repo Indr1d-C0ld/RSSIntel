@@ -1,28 +1,69 @@
-# Header di sicurezza per RSSIntel.
+# RSSIntel — header di sicurezza e politica di cache.
 #
-# Le direttive `Header` NON possono stare in .htaccess senza `AllowOverride
-# FileInfo` (e se AllowOverride cambia, Apache va in 500). Vanno quindi nel
-# vhost / nella config del server, dentro il blocco <Directory> o <VirtualHost>
-# che serve RSSIntel. Richiede mod_headers (a2enmod headers).
+# Installazione:
+#   sudo install -o root -g root -m 644 rssintel-security-headers.conf \
+#        /etc/apache2/conf-available/rssintel-security-headers.conf
+#   sudo a2enconf rssintel-security-headers
+#   sudo apache2ctl configtest && sudo systemctl reload apache2
 #
-#   <Directory /var/www/html/rssintel>
-#       ... (AllowOverride, Require, ecc.)
-#       Include /etc/apache2/conf-available/rssintel-security-headers.conf
-#   </Directory>
-#
-# oppure incolla direttamente queste righe nel blocco:
+# Sta in conf-available (contesto server) e non in .htaccess: le direttive
+# `Header` in .htaccess richiedono AllowOverride FileInfo e il 03/09/2026
+# hanno mandato in 500 l'intero portale. Vale per entrambi i vhost (:80 e :443).
+# mod_headers e' gia' abilitato su questa macchina.
 
-<IfModule mod_headers.c>
-    Header always set X-Content-Type-Options "nosniff"
-    Header always set X-Frame-Options "SAMEORIGIN"
-    Header always set Referrer-Policy "same-origin"
-    # CSP moderata: blocca risorse esterne, framing, plugin ed esfiltrazione via
-    # form. 'unsafe-inline' e' necessario perche' il portale usa <script>,
-    # handler onclick/onsubmit e attributi style= inline.
-    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
+<Directory /var/www/html/rssintel>
 
-    # Cache lunga per gli asset statici versionati (?v=...); l'HTML resta no-cache.
-    <FilesMatch "\.(css|js)$">
+    # Niente elenco file nelle cartelle senza index (assets/, assets/themes/).
+    Options -Indexes
+
+    <IfModule mod_headers.c>
+        Header always set X-Content-Type-Options "nosniff"
+        Header always set X-Frame-Options "SAMEORIGIN"
+        Header always set Referrer-Policy "same-origin"
+
+        # CSP moderata: blocca risorse esterne, framing, plugin ed esfiltrazione
+        # via form. 'unsafe-inline' resta necessario finche' il portale usa
+        # <script> inline, handler onclick/onsubmit e attributi style=.
+        Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
+
+        # base.css NON e' versionato: i temi lo tirano dentro con
+        # @import "../base.css", senza query string. Con una cache lunga
+        # resterebbe congelato — e base.css contiene TUTTE le regole responsive
+        # (stessa classe di problema dell'incidente mobile del 03/09).
+        # no-cache non impedisce la cache: impone la rivalidazione, che con
+        # l'ETag gia' presente costa un 304 di pochi byte.
+        <Files "base.css">
+            Header set Cache-Control "no-cache"
+        </Files>
+
+        # HTML/PHP: mai in cache (contengono dati di sessione e il token CSRF).
+        <FilesMatch "\.php$">
+            Header always set Cache-Control "no-store, no-cache, must-revalidate"
+        </FilesMatch>
+    </IfModule>
+
+</Directory>
+
+# I file dei temi SONO versionati: theme_href() genera
+# assets/themes/<tema>.css?v=<mtime>, e v cambia anche quando cambia base.css.
+# Quindi immutable e' sicuro: a ogni modifica cambia l'URL.
+# Blocco separato: Apache non permette <Directory> annidati, e applicando le
+# sezioni dalla piu' generica alla piu' specifica questa vince sulla precedente.
+<Directory /var/www/html/rssintel/assets/themes>
+    <IfModule mod_headers.c>
         Header set Cache-Control "public, max-age=31536000, immutable"
-    </FilesMatch>
-</IfModule>
+    </IfModule>
+</Directory>
+
+# HSTS — NOTA: l'intestazione e' host-wide: vale per TUTTE le applicazioni
+# servite dallo stesso host, non solo per RSSIntel. Attivala solo se tutte
+# redirigono gia' a HTTPS con certificato valido.
+# Va deciso consapevolmente e non e' facilmente reversibile: i browser la
+# ricordano per tutta la durata di max-age anche se poi rimuovi l'header.
+# Niente includeSubDomains: i sottodomini potrebbero non avere certificato.
+# Per provarla in sicurezza parti da max-age=86400 (1 giorno) e alza dopo.
+# Se la attivi, togli il commento alle due righe seguenti.
+#
+# <IfModule mod_headers.c>
+#     Header always set Strict-Transport-Security "max-age=86400"
+# </IfModule>

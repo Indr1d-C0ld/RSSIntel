@@ -105,6 +105,12 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        # tempfile.mkstemp() crea SEMPRE con modo 0600, per progetto e a
+        # prescindere dalla umask (e' una garanzia della libreria standard), e
+        # os.replace() preserva il modo del file temporaneo. Senza questa riga
+        # ogni file di testo nasce leggibile solo dall'utente del fetcher, e
+        # qualunque backup/sync eseguito da un altro utente fallisce in lettura.
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     finally:
         try:

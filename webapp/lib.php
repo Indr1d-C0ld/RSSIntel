@@ -65,12 +65,17 @@ function fmt_day(string $s): string {
 /* =====================  Sessione + CSRF  ===================== */
 
 if (session_status() === PHP_SESSION_NONE) {
+  // Il sito e' servito via HTTPS (certificato Let's Encrypt) e il vhost :80
+  // redirige con 301: senza il flag `secure` il PHPSESSID viaggerebbe comunque
+  // in chiaro nella prima richiesta HTTP, prima che il redirect scatti.
+  // Nota: con 'secure' => true la sessione non funziona su HTTP puro — per una
+  // prova locale con `php -S` metti temporaneamente false.
   session_set_cookie_params([
     'lifetime' => 0,
     'path'     => '/',
     'httponly' => true,
     'samesite' => 'Lax',
-    // 'secure' => true,  // abilita se il sito e' servito solo via HTTPS
+    'secure'   => true,
   ]);
   session_start();
 }

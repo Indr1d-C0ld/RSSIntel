@@ -487,7 +487,12 @@ async function delNote(id) {
     try {
       const response = await fetch('translate.php', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // translate.php riceve JSON: il token non puo' arrivare in $_POST,
+          // quindi viaggia in header e li' viene confrontato con hash_equals.
+          'X-CSRF-Token': '<?=h(csrf_token())?>'
+        },
         body: JSON.stringify({ q: text, source: 'en', target: 'it' }),
         credentials: 'same-origin',
         signal: currentController.signal

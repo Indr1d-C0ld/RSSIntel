@@ -1,9 +1,33 @@
 # RSSIntel — autenticazione gestita dall'applicazione (tabella users + login.php).
 # Niente Basic Auth: l'accesso e' controllato da require_login()/require_role().
-# Nega l'accesso diretto via HTTP a configurazione, database e dump SQL.
+#
+# ATTENZIONE: conf-available/rssintel.conf imposta `AllowOverride AuthConfig`
+# per questa cartella. Qui dentro sono quindi ammesse SOLO direttive
+# Require/Auth*, nient'altro:
+#   - `Header`  -> richiede FileInfo. E' la causa del 500 totale del 03/09/2026.
+#   - `Options` -> richiede Options. Stessa identica fragilita'.
+# Header di sicurezza e `Options -Indexes` stanno nel vhost:
+#   conf-available/rssintel-security-headers.conf
+#
+# I backup degli editor (*~, *.bak, ...) sono gia' bloccati a livello globale da
+# conf-available/no-editor-backups.conf, che vale per tutti i vhost. Le regole
+# qui sotto restano come difesa locale: se quella conf venisse disabilitata,
+# RSSIntel non torna scoperta.
+
+# Configurazione, database e dump SQL.
 <FilesMatch "\.(sql|db|db-wal|db-shm|sqlite|sqlite3)$">
   Require all denied
 </FilesMatch>
-<Files "config.php">
+
+# Backup dell'editor (ridondante con no-editor-backups.conf, voluto).
+<FilesMatch "(~|\.(bak|orig|save|old|tmp|swp|swo|rej))$">
   Require all denied
-</Files>
+</FilesMatch>
+
+# File PHP che Apache NON passa a mod_php perche' non finiscono in .php:
+# verrebbero serviti come sorgente in chiaro.
+#   - config.php        : configurazione reale (gia' negata prima d'ora)
+#   - item.php_notrad   : ancora HTTP 200 al 14/09/2026, questa riga lo chiude
+<FilesMatch "^(config\.php|item\.php_notrad)$">
+  Require all denied
+</FilesMatch>

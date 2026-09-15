@@ -1,0 +1,16 @@
+# RSSIntel — AllowOverride minimo per la cartella servita.
+#
+# Installazione: conf-available/rssintel.conf + a2enconf rssintel
+#
+# AuthConfig e' quanto basta: il .htaccess di RSSIntel usa SOLO direttive
+# `Require`. Tenerlo stretto e' voluto — impedisce che finiscano nel .htaccess
+# direttive che richiedono privilegi maggiori e che romperebbero il sito se la
+# configurazione del server cambiasse:
+#   - `Header`  (serve FileInfo) -> il 03/09/2026 ha causato 500 su tutto il sito
+#   - `Options` (serve Options)  -> stessa fragilita'
+# Header di sicurezza e `Options -Indexes` vanno nel vhost/conf, non nel .htaccess:
+# vedi security-headers.conf.sample.
+
+<Directory /var/www/html/rssintel>
+    AllowOverride AuthConfig
+</Directory>

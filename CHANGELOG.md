@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-09-15 — Audit di sicurezza: 5 correzioni (2 critiche)
+
+Esito di un audit completo della piattaforma. Tutti i reperti sono stati
+riprodotti sul deployment live prima della correzione e verificati dopo.
+
+- **`deploy/htaccess.sample` — sorgente e configurazione servite in chiaro
+  (critico).** Apache non passa a mod_php i file che non finiscono in `.php`
+  (l'handler richiede `\.php$`): li serve come testo. Erano quindi scaricabili
+  senza autenticazione tutti i backup dell'editor (`*.php~`, incluso il
+  `config.php~` con la configurazione reale e il `lib.php~` con l'intera
+  logica di autenticazione) e `item.php_notrad`. Nuove regole `FilesMatch` per
+  backup, estensioni di lavoro e file PHP con estensione non standard.
+- **`webapp/translate.php` — endpoint senza autenticazione (critico).** Era
+  l'unica pagina priva di gate: includeva `lib.php` ma non chiamava mai
+  `require_login()`. Una POST anonima raggiungeva il servizio di traduzione su
+  loopback e teneva occupato un worker Apache per i 120 s del timeout — con
+  MPM prefork e `MaxRequestWorkers 150` bastavano ~150 richieste anonime per
+  rendere irraggiungibile l'intero portale. Aggiunti: gate `auth_user()`,
+  verifica CSRF via header `X-CSRF-Token` (il client manda JSON, quindi
+  `csrf_check()` su `$_POST` non era applicabile), validazione dei codici
+  lingua, timeout ridotto da 120 s a 30 s. Misurato dopo: 401 in 14 ms.
+- **`webapp/item.php`**: la fetch verso `translate.php` manda ora il token CSRF
+  nell'header `X-CSRF-Token`. Va in coppia con la modifica sopra.
+- **`webapp/lib.php` — cookie di sessione senza `Secure`.** Il flag era
+  commentato ("abilita se il sito e' servito solo via HTTPS") mentre il sito e'
+  su HTTPS: su una prima richiesta in chiaro il `PHPSESSID` viaggiava in
+  cleartext prima che scattasse il redirect 301. Ora `'secure' => true`.
+- **`deploy/security-headers.conf.sample` — riscritto.** Lo snippet precedente
+  applicava `Cache-Control: immutable, max-age=1 anno` a *tutti* i `.css`, ma
+  `base.css` non e' versionato: i temi lo includono con `@import "../base.css"`
+  senza query string. Installato cosi' avrebbe congelato per un anno il file
+  che contiene tutte le regole responsive. Ora: `immutable` solo per
+  `assets/themes/` (che `theme_href()` versiona davvero), `no-cache` per
+  `base.css` (con l'ETag gia' presente costa un 304), `no-store` per le pagine
+  PHP. Corretto anche un `<Directory>` annidato, che Apache non ammette.
+  Aggiunto `Options -Indexes` (le cartelle senza index erano elencabili).
+- **`fetcher/rssintel_fetch.py` — permessi dei file di testo.**
+  `tempfile.mkstemp()` crea sempre con modo `0600`, per progetto e a
+  prescindere dalla umask, e `os.replace()` preserva quel modo: ogni file di
+  testo nasceva leggibile solo dall'utente del fetcher, e qualunque
+  backup/sync eseguito da un altro utente falliva in lettura. Aggiunto
+  `os.chmod(tmp, 0o644)` prima di `os.replace()`.
+- **`deploy/allowoverride.conf.sample`** (nuovo): documenta perche'
+  `AllowOverride` resta ad `AuthConfig` e perche' `Header` e `Options` non
+  vanno nel `.htaccess` — e' la causa dell'interruzione totale del 03/09/2026.
+- **`deploy/no-editor-backups.conf.sample`** (nuovo): rete di sicurezza a
+  livello di server che nega i backup degli editor su tutti i vhost, cosi' il
+  prossimo file dimenticato non torna leggibile.
+
 ## 2026-09-13 — Sistema multi-tema (6 stili, scelta riservata all'admin)
 
 - **`webapp/assets/base.css`** (nuovo): tutto il CSS strutturale/responsive
