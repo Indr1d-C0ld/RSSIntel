@@ -24,8 +24,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$hash || !password_verify($cur, $hash)) {
       throw new RuntimeException('Password attuale errata.');
     }
-    if (strlen($new) < 8) {
-      throw new RuntimeException('La nuova password deve avere almeno 8 caratteri.');
+    if ($e = password_length_error($new)) {
+      throw new RuntimeException($e);
     }
     if ($new !== $new2) {
       throw new RuntimeException('Le due nuove password non coincidono.');

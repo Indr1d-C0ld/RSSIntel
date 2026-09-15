@@ -96,7 +96,11 @@ CREATE TABLE IF NOT EXISTS saved_searches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_feed ON items(feed_id);
-CREATE INDEX IF NOT EXISTS idx_items_pub  ON items(published_at);
+-- La vista cronologica (browse.php) filtra e ordina per
+-- COALESCE(published_at, fetched_at): l'espressione non e' sargable, quindi
+-- serve un indice d'espressione, altrimenti ogni caricamento fa SCAN di items.
+CREATE INDEX IF NOT EXISTS idx_items_when ON items(COALESCE(published_at, fetched_at) DESC);
+CREATE INDEX IF NOT EXISTS idx_items_published_at ON items(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ann_item   ON annotations(item_id);
 CREATE INDEX IF NOT EXISTS idx_saved_searches_owner ON saved_searches(owner, name);
 

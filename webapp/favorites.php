@@ -31,6 +31,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         throw new RuntimeException('Articolo inesistente.');
       }
       $note = trim((string)($_POST['note'] ?? ''));
+      // Stesso tetto del percorso 'note': prima 'add' non ne aveva nessuno.
+      if (mb_strlen($note, 'UTF-8') > FAVORITE_MAX_NOTE) {
+        throw new RuntimeException('Nota troppo lunga (max ' . FAVORITE_MAX_NOTE . ' caratteri).');
+      }
       $st = $dbw->prepare(
         "INSERT INTO favorites(owner, item_id, note) VALUES(:o, :i, :n)
          ON CONFLICT(owner, item_id) DO NOTHING"
@@ -52,8 +56,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     elseif ($action === 'note' && $item_id > 0) {
       $note = trim((string)($_POST['note'] ?? ''));
-      if (mb_strlen($note, 'UTF-8') > 4000) {
-        throw new RuntimeException('Nota troppo lunga (max 4000 caratteri).');
+      if (mb_strlen($note, 'UTF-8') > FAVORITE_MAX_NOTE) {
+        throw new RuntimeException('Nota troppo lunga (max ' . FAVORITE_MAX_NOTE . ' caratteri).');
       }
       $st = $dbw->prepare("UPDATE favorites SET note = :n WHERE owner = :o AND item_id = :i");
       $st->bindValue(':n', $note, SQLITE3_TEXT);
@@ -132,7 +136,9 @@ if ($db->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='f
               <?=h(fmt_dt((string)($fv['published_at'] ?: $fv['fetched_at'])))?>
               · nei favoriti dal <?=h(fmt_dt((string)$fv['created_at']))?>
               <?php if (!empty($fv['link'])): ?>
-                · <a href="<?=h((string)$fv['link'])?>" target="_blank">Apri fonte</a>
+                <?php if ($u = safe_url((string)$fv['link'])): ?>
+                  · <a href="<?=$u?>" target="_blank" rel="noopener noreferrer">Apri fonte</a>
+                <?php endif; ?>
               <?php endif; ?>
             </div>
           </div>

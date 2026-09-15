@@ -35,15 +35,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $ip = client_ip();
 
   // Rate-limit morbido: troppi tentativi falliti dallo stesso IP -> attesa.
-  if (!$bootstrap && recent_failed_logins($dbw, $ip, 15) >= 10) {
+  // Vale anche in bootstrap: li' la creazione del primo admin e' anonima, e
+  // senza limite sarebbe un bersaglio comodo se la tabella users si svuotasse.
+  if (recent_failed_logins($dbw, $ip, 15) >= 10) {
     $err = 'Troppi tentativi falliti. Riprova tra qualche minuto.';
     record_login_attempt($username, $ip, false);
   } elseif ($bootstrap) {
     $password2 = (string)($_POST['password2'] ?? '');
     if (!preg_match('~^[A-Za-z0-9._-]{2,32}$~', $username)) {
       $err = 'Username non valido (2-32 caratteri: lettere, cifre, . _ -).';
-    } elseif (strlen($password) < 8) {
-      $err = 'Password troppo corta (minimo 8 caratteri).';
+    } elseif ($e = password_length_error($password)) {
+      $err = $e;
     } elseif ($password !== $password2) {
       $err = 'Le due password non coincidono.';
     } else {
@@ -72,8 +74,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $st->bindValue(':u', $username, SQLITE3_TEXT);
     $row = $st->execute()->fetchArray(SQLITE3_ASSOC);
 
-    if (!$row || (int)$row['disabled'] === 1
-        || !password_verify($password, (string)$row['password_hash'])) {
+    // Verifica la password SEMPRE, anche quando l'utente non esiste: il
+    // corto-circuito `!$row || !password_verify(...)` faceva rispondere subito
+    // per un utente inesistente e dopo ~80ms di bcrypt per uno esistente,
+    // rivelando quali username sono validi. L'hash fittizio ha lo stesso
+    // costo (bcrypt 12, ~290ms), quindi i due rami sono indistinguibili.
+    $dummy_hash = '$2y$12$9yivyWVJC118NZI6TCIo2O.65wADgKPbN3SC9yhMWjtbYecchtuku';
+    $hash  = $row ? (string)$row['password_hash'] : $dummy_hash;
+    $ok_pw = password_verify($password, $hash);
+
+    if (!$row || (int)$row['disabled'] === 1 || !$ok_pw) {
       $err = 'Credenziali non valide.';
       record_login_attempt($username, $ip, false);
       usleep(300000); // piccolo rallentamento anti brute-force

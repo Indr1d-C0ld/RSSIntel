@@ -32,8 +32,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       if (!preg_match('~^[A-Za-z0-9._-]{2,32}$~', $username)) {
         throw new RuntimeException('Username non valido (2-32: lettere, cifre, . _ -).');
       }
-      if (strlen($password) < 8) {
-        throw new RuntimeException('Password troppo corta (minimo 8 caratteri).');
+      if ($e = password_length_error($password)) {
+        throw new RuntimeException($e);
       }
       if (!in_array($role, RSSINTEL_ROLES, true)) {
         throw new RuntimeException('Ruolo non valido.');
@@ -87,8 +87,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     elseif ($action === 'reset_password') {
       $password = (string)($_POST['password'] ?? '');
-      if (strlen($password) < 8) {
-        throw new RuntimeException('Password troppo corta (minimo 8 caratteri).');
+      if ($e = password_length_error($password)) {
+        throw new RuntimeException($e);
       }
       $st = $dbw->prepare("UPDATE users SET password_hash=:h WHERE id=:id");
       $st->bindValue(':h', password_hash($password, PASSWORD_DEFAULT), SQLITE3_TEXT);
@@ -101,13 +101,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       if ($id === (int)$me['id']) {
         throw new RuntimeException('Non puoi eliminare te stesso.');
       }
-      $row = $dbw->querySingle("SELECT role, disabled FROM users WHERE id=" . $id, true);
+      $row = $dbw->querySingle("SELECT username, role, disabled FROM users WHERE id=" . $id, true);
       if (!$row) throw new RuntimeException('Utente non trovato.');
       if ($row['role'] === 'admin' && (int)$row['disabled'] === 0 && active_admins($dbw, $id) === 0) {
         throw new RuntimeException('Deve restare almeno un amministratore attivo.');
       }
-      $dbw->exec("DELETE FROM users WHERE id=" . $id);
-      $_SESSION['flash'] = ['ok', 'Utente eliminato.'];
+      $uname = (string)$row['username'];
+
+      // favorites/saved_searches/annotations sono legati allo USERNAME, non a
+      // users.id: eliminando solo la riga utente restavano orfani, e creando poi
+      // un utente con lo stesso nome il nuovo account ne ereditava favoriti,
+      // ricerche salvate e la paternita' delle annotazioni.
+      //
+      // Dati personali -> rimossi. Annotazioni -> conservate (sono lavoro
+      // d'archivio condiviso, utile agli altri) ma l'autore viene marcato, cosi'
+      // un omonimo futuro non ne acquisisce la proprieta'.
+      $dbw->exec('BEGIN IMMEDIATE');
+      try {
+        $n_fav = 0; $n_sav = 0; $n_ann = 0;
+
+        if ($dbw->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='favorites'")) {
+          $s = $dbw->prepare("DELETE FROM favorites WHERE owner = :o");
+          $s->bindValue(':o', $uname, SQLITE3_TEXT); $s->execute();
+          $n_fav = $dbw->changes();
+        }
+        if ($dbw->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='saved_searches'")) {
+          $s = $dbw->prepare("DELETE FROM saved_searches WHERE owner = :o");
+          $s->bindValue(':o', $uname, SQLITE3_TEXT); $s->execute();
+          $n_sav = $dbw->changes();
+        }
+        $s = $dbw->prepare("UPDATE annotations SET author = :new WHERE author = :old");
+        $s->bindValue(':new', $uname . ' (eliminato)', SQLITE3_TEXT);
+        $s->bindValue(':old', $uname, SQLITE3_TEXT);
+        $s->execute();
+        $n_ann = $dbw->changes();
+
+        $dbw->exec("DELETE FROM users WHERE id=" . $id);
+        $dbw->exec('COMMIT');
+      } catch (Throwable $e) {
+        $dbw->exec('ROLLBACK');
+        throw $e;
+      }
+
+      $_SESSION['flash'] = ['ok', sprintf(
+        'Utente «%s» eliminato. Rimossi: %d favoriti, %d ricerche salvate. '
+        . 'Conservate %d annotazioni, ora attribuite a «%s (eliminato)».',
+        $uname, $n_fav, $n_sav, $n_ann, $uname
+      )];
     }
   } catch (Throwable $e) {
     $_SESSION['flash'] = ['err', $e->getMessage()];

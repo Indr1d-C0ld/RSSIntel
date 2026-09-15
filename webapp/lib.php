@@ -40,6 +40,47 @@ function h(string $s): string {
 }
 
 /**
+ * URL sicuro per un attributo href, gia' escapato.
+ *
+ * h() impedisce di uscire dall'attributo ma NON filtra lo schema: un link
+ * `javascript:...` o `data:text/html,...` resterebbe cliccabile ed eseguirebbe
+ * script nell'origine del portale. I link degli articoli arrivano da
+ * <link> nei feed remoti, quindi sono input non fidato.
+ *
+ * Ritorna '' se lo schema non e' http/https: il chiamante mostra il link
+ * come semplice testo invece che come ancora.
+ */
+function safe_url(?string $u): string {
+  $u = trim((string)$u);
+  if ($u === '' || !preg_match('~^https?://~i', $u)) return '';
+  // Niente caratteri di controllo (spezzerebbero l'attributo o l'header).
+  if (preg_match('~[\x00-\x1F\x7F]~', $u)) return '';
+  return h($u);
+}
+
+/**
+ * Fuso orario del portale. Il DB conserva sempre UTC (datetime('now') di
+ * SQLite), qui si decide come viene mostrato e come si interpretano i giorni
+ * scelti dall'utente.
+ *
+ * date.timezone in php.ini e' UTC mentre il sistema (e quindi il 'localtime'
+ * di SQLite) e' su Europe/Rome: stats.php mescolava i due, generando le
+ * etichette dei giorni con PHP (UTC) e i bucket con SQL (Roma). Fissandolo qui
+ * i due allineano.
+ */
+const RSSINTEL_TZ = 'Europe/Rome';
+date_default_timezone_set(RSSINTEL_TZ);
+
+/** Estremi UTC di un giorno di calendario italiano, per confronti su colonne UTC. */
+function day_bounds_utc(string $day): array {
+  $tz = new DateTimeZone(RSSINTEL_TZ);
+  $utc = new DateTimeZone('UTC');
+  $a = (new DateTime($day . ' 00:00:00', $tz))->setTimezone($utc)->format('Y-m-d H:i:s');
+  $b = (new DateTime($day . ' 23:59:59', $tz))->setTimezone($utc)->format('Y-m-d H:i:s');
+  return [$a, $b];
+}
+
+/**
  * Data/ora del DB (UTC) formattata all'italiana nel fuso di Roma.
  *   fmt_dt('2026-08-27 21:14:34')        -> '27/08/2026 23:14'
  *   fmt_dt('2026-08-27 21:14:34', false) -> '27/08/2026'
@@ -50,7 +91,7 @@ function fmt_dt(?string $s, bool $with_time = true): string {
   if ($s === '' || str_starts_with($s, '0000-00-00')) return '';
   try {
     $dt = new DateTime($s, new DateTimeZone('UTC'));
-    $dt->setTimezone(new DateTimeZone('Europe/Rome'));
+    $dt->setTimezone(new DateTimeZone(RSSINTEL_TZ));
     return $dt->format($with_time ? 'd/m/Y H:i' : 'd/m/Y');
   } catch (Throwable $e) {
     return $s;
@@ -70,6 +111,7 @@ if (session_status() === PHP_SESSION_NONE) {
   // in chiaro nella prima richiesta HTTP, prima che il redirect scatti.
   // Nota: con 'secure' => true la sessione non funziona su HTTP puro — per una
   // prova locale con `php -S` metti temporaneamente false.
+  session_name('RSSINTELSESSID');
   session_set_cookie_params([
     'lifetime' => 0,
     'path'     => '/',
@@ -96,6 +138,28 @@ function csrf_check(): bool {
 
 /** Ruoli validi, dal meno al piu' privilegiato. */
 const RSSINTEL_ROLES = ['reader', 'collaborator', 'admin'];
+
+/* Tetti di lunghezza per i testi inseriti dagli utenti (caratteri).
+   Senza, una singola POST poteva memorizzare megabyte per riga. */
+const ANNOTATION_MAX_NOTE  = 20000;
+const ANNOTATION_MAX_QUOTE = 4000;
+const FAVORITE_MAX_NOTE    = 4000;
+
+/**
+ * bcrypt usa al massimo i primi 72 byte: oltre, i caratteri in piu' vengono
+ * ignorati in silenzio. Una passphrase lunga verrebbe quindi accettata alla
+ * creazione e troncata alla verifica, senza che nessuno se ne accorga.
+ * Ritorna un messaggio d'errore, oppure '' se la password va bene.
+ */
+function password_length_error(string $pw): string {
+  if (strlen($pw) < 8) {
+    return 'Password troppo corta (minimo 8 caratteri).';
+  }
+  if (strlen($pw) > 72) {
+    return 'Password troppo lunga (massimo 72 byte: bcrypt ignorerebbe il resto).';
+  }
+  return '';
+}
 
 /** DDL della tabella utenti (usata anche a runtime da login.php / users.php). */
 function users_schema(): string {
@@ -300,10 +364,44 @@ function log_access(): void {
       $st->bindValue(':ua',     mb_substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500), SQLITE3_TEXT);
       $st->bindValue(':ref',    mb_substr((string)($_SERVER['HTTP_REFERER'] ?? ''), 0, 500), SQLITE3_TEXT);
       $st->execute();
+      // Potatura occasionale: senza, la tabella cresceva senza limite.
+      if (random_int(1, 200) === 1) { access_log_prune($db); }
     } catch (Throwable $e) {
       // il logging non deve mai rompere la risposta
     }
   });
+}
+
+/**
+ * Giorni di conservazione del log accessi (0 = per sempre, default).
+ * access_log cresce di una riga per richiesta HTTP e conserva IP, user-agent,
+ * referer e query string. Su un portale OSINT la query string di search.php
+ * E' il termine di ricerca dell'analista: tenerlo per sempre e' il dato piu'
+ * sensibile dell'installazione.
+ */
+function access_log_retention_days(): int {
+  // Default 0 = illimitato. Un default che cancella dati senza che nessuno
+  // l'abbia chiesto e' la scelta sbagliata: la potatura si attiva solo se
+  // config.php indica esplicitamente un numero di giorni.
+  $d = cfg()['access_log_retention_days'] ?? 0;
+  return max(0, (int)$d);
+}
+
+/**
+ * Elimina le righe piu' vecchie della retention. Chiamata con parsimonia
+ * (1 richiesta su 200) per non pagare il costo a ogni pagina.
+ * Ritorna il numero di righe rimosse.
+ */
+function access_log_prune(SQLite3 $dbw, ?int $days = null): int {
+  $days = $days ?? access_log_retention_days();
+  if ($days <= 0) return 0;
+  if (!$dbw->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='access_log'")) {
+    return 0;
+  }
+  $st = $dbw->prepare("DELETE FROM access_log WHERE ts < datetime('now', :w)");
+  $st->bindValue(':w', '-' . $days . ' days', SQLITE3_TEXT);
+  $st->execute();
+  return $dbw->changes();
 }
 
 /** Registra un tentativo di login (riuscito o fallito). */

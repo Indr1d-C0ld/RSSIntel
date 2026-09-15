@@ -68,6 +68,17 @@ if ($export === 'json' || $export === 'csv') {
   header('Content-Type: text/csv; charset=utf-8');
   header('Content-Disposition: attachment; filename="rssintel_feeds_' . $stamp . '.csv"');
 
+  /**
+   * Neutralizza le formule per Excel/LibreOffice.
+   * I titoli dei feed arrivano dal <title> del feed remoto: un valore che
+   * inizia con = + - @ (o TAB/CR) verrebbe interpretato come formula
+   * all'apertura del CSV, non come testo.
+   */
+  $csv_safe = static function (?string $v): string {
+    $v = (string)$v;
+    return ($v !== '' && strpbrk($v[0], "=+-@\t\r") !== false) ? "'" . $v : $v;
+  };
+
   $out = fopen('php://output', 'w');
   fwrite($out, "\xEF\xBB\xBF");
   fputcsv($out, ['id', 'url', 'title', 'enabled', 'created_at', 'updated_at']);
@@ -75,8 +86,8 @@ if ($export === 'json' || $export === 'csv') {
   foreach ($rows as $r) {
     fputcsv($out, [
       (string)$r['id'],
-      (string)$r['url'],
-      (string)($r['title'] ?? ''),
+      $csv_safe((string)$r['url']),
+      $csv_safe((string)($r['title'] ?? '')),
       (string)$r['enabled'],
       (string)($r['created_at'] ?? ''),
       (string)($r['updated_at'] ?? ''),
@@ -239,11 +250,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 /* ===== list ===== */
+// n_items serve alla conferma di eliminazione: DELETE su feeds cascata su
+// items (ON DELETE CASCADE) e da li' su annotations e favorites. Prima la
+// conferma diceva solo "Eliminare feed #N?", senza far capire che si stavano
+// buttando via migliaia di articoli e il lavoro di annotazione collegato.
 $rows = [];
 $res = $db->query("
-  SELECT id, url, title, enabled, last_fetch_at, last_status, last_error, created_at, updated_at
-  FROM feeds
-  ORDER BY enabled DESC, COALESCE(title, url) ASC
+  SELECT f.id, f.url, f.title, f.enabled, f.last_fetch_at, f.last_status, f.last_error,
+         f.created_at, f.updated_at,
+         (SELECT COUNT(*) FROM items i WHERE i.feed_id = f.id) AS n_items
+  FROM feeds f
+  ORDER BY f.enabled DESC, COALESCE(f.title, f.url) ASC
 ");
 while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
   $rows[] = $r;
@@ -321,6 +338,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
             <b><?=h((string)($r['title'] ?: $r['url']))?></b>
             <div class="row" style="margin-top:6px;">
               <span class="badge">#<?= (int)$r['id'] ?></span>
+              <span class="badge"><?= number_format((int)$r['n_items'], 0, ',', '.') ?> articoli</span>
               <?php if ((int)$r['enabled'] === 1): ?>
                 <span class="badge">abilitato</span>
               <?php else: ?>
@@ -339,7 +357,17 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
               </button>
             </form>
 
-            <form method="post" onsubmit="return confirm('Eliminare feed #<?= (int)$r['id'] ?>?')">
+            <form method="post" onsubmit="return confirm(<?=
+              json_encode(
+                'ELIMINARE DEFINITIVAMENTE il feed «'
+                . (string)($r['title'] ?: $r['url']) . '»?'
+                . "\n\n" . 'Verranno cancellati anche i suoi '
+                . number_format((int)$r['n_items'], 0, ',', '.')
+                . ' articoli, con le annotazioni e i favoriti collegati.'
+                . "\n" . 'Operazione non reversibile.'
+                . "\n\n" . 'Per fermare solo la raccolta, usa «Disabilita».',
+                JSON_UNESCAPED_UNICODE | JSON_HEX_QUOT | JSON_HEX_APOS | JSON_HEX_TAG | JSON_HEX_AMP
+              ) ?>)">
               <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
               <input type="hidden" name="action" value="delete">
               <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">

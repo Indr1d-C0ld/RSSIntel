@@ -10,7 +10,14 @@ $db = db_ro();
 $feed_id = isset($_GET['feed']) && ctype_digit($_GET['feed']) ? (int)$_GET['feed'] : null;
 $date_mode = $_GET['date'] ?? 'day'; // day, week, month
 if (!in_array($date_mode, ['day', 'week', 'month'], true)) $date_mode = 'day'; // whitelist: evita XSS riflesso negli href
-$day = $_GET['day'] ?? date('Y-m-d');
+// `day` finisce in strtotime() e in new DateTime(): un valore non conforme
+// (es. ?day=pwned, ?day=2026-13-45) faceva sollevare DateMalformedStringException
+// e la pagina rispondeva 500. Accetta solo una data reale in formato ISO.
+$day = (string)($_GET['day'] ?? '');
+$dchk = DateTime::createFromFormat('!Y-m-d', $day);
+if (!$dchk || $dchk->format('Y-m-d') !== $day) {
+  $day = date('Y-m-d');
+}
 $page = isset($_GET['page']) && ctype_digit($_GET['page']) ? (int)$_GET['page'] : 1;
 $per_page = 30;
 
@@ -148,7 +155,9 @@ while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
             <div class="meta result-meta">
               <?=h(fmt_dt($item['published_at'] ?: $item['fetched_at']))?>
               <?php if (!empty($item['link'])): ?>
-                · <a href="<?=h($item['link'])?>" target="_blank">Apri fonte</a>
+                <?php if ($u = safe_url($item['link'])): ?>
+                  · <a href="<?=$u?>" target="_blank" rel="noopener noreferrer">Apri fonte</a>
+                <?php endif; ?>
               <?php endif; ?>
             </div>
           </div>

@@ -198,7 +198,12 @@ if ($item_tags) {
 
     <?php if (!empty($row['link'])): ?>
       <div class="meta" style="margin-top:6px">
-        Fonte: <a href="<?=h((string)$row['link'])?>" target="_blank"><?=h((string)$row['link'])?></a>
+        Fonte:
+        <?php if ($u = safe_url((string)$row['link'])): ?>
+          <a href="<?=$u?>" target="_blank" rel="noopener noreferrer"><?=h((string)$row['link'])?></a>
+        <?php else: ?>
+          <span title="schema non http/https: mostrato come testo"><?=h((string)$row['link'])?></span>
+        <?php endif; ?>
       </div>
     <?php endif; ?>
 

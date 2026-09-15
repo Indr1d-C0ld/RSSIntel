@@ -10,6 +10,10 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
+import ipaddress
+import socket
+from urllib.parse import urlsplit
+
 import requests
 import feedparser
 
@@ -132,13 +136,71 @@ def atomic_write_text(path: str, text: str, gz: bool) -> str:
         return path
 
 
+MAX_REDIRECTS = 5
+
+
+def is_public_url(url: str) -> Tuple[bool, Optional[str]]:
+    """
+    True se l'URL e' http(s) e l'host risolve SOLO a indirizzi pubblici.
+
+    Gli URL degli articoli arrivano dal contenuto dei feed remoti, cioe' da
+    input non fidato: senza questo controllo chi governa (o compromette) un
+    feed puo' far interrogare al fetcher loopback, LAN o metadata delle
+    cloud (169.254.169.254) e poi rileggersi la risposta dal portale.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError as ex:
+        return False, f"URL non valido: {ex}"
+
+    if parts.scheme.lower() not in ("http", "https"):
+        return False, f"schema non consentito: {parts.scheme!r}"
+    host = parts.hostname
+    if not host:
+        return False, "host mancante"
+
+    try:
+        infos = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except OSError as ex:
+        return False, f"risoluzione fallita: {ex}"
+
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        # is_global esclude privati, loopback, link-local, multicast e riservati
+        if not ip.is_global:
+            return False, f"indirizzo non pubblico: {ip}"
+    return True, None
+
+
+def get_checked(session: requests.Session, url: str, **kw) -> requests.Response:
+    """
+    GET che valida l'URL a ogni salto invece di fidarsi dei redirect.
+
+    `allow_redirects=True` seguirebbe ciecamente un 302 verso un indirizzo
+    interno, vanificando il controllo iniziale: qui i redirect si seguono a
+    mano, rivalidando ogni destinazione.
+    """
+    for _ in range(MAX_REDIRECTS + 1):
+        ok, why = is_public_url(url)
+        if not ok:
+            raise ValueError(f"URL bloccato ({why}): {url}")
+        r = session.get(url, allow_redirects=False, **kw)
+        if r.status_code in (301, 302, 303, 307, 308) and "location" in r.headers:
+            url = requests.compat.urljoin(url, r.headers["location"])
+            r.close()
+            continue
+        return r
+    raise ValueError(f"troppi redirect (>{MAX_REDIRECTS}): {url}")
+
+
 def fetch_url_limited(session: requests.Session, url: str) -> Tuple[Optional[str], Optional[int], Optional[str]]:
     """
     Ritorna (html_text, status_code, error_string). html_text può essere None.
     Scarica in streaming con cap MAX_HTML_BYTES per contenere RAM.
     """
     try:
-        r = session.get(url, timeout=TIMEOUT, headers={"User-Agent": UA}, stream=True, allow_redirects=True)
+        r = get_checked(session, url, timeout=TIMEOUT, headers={"User-Agent": UA}, stream=True)
         status = r.status_code
         r.raise_for_status()
 
@@ -189,7 +251,7 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
         headers["If-Modified-Since"] = last_mod
 
     try:
-        r = session.get(url, timeout=TIMEOUT, headers=headers)
+        r = get_checked(session, url, timeout=TIMEOUT, headers=headers)
         status = r.status_code
 
         if status == 304:
@@ -216,8 +278,10 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
         added = 0
         processed_new = 0
 
-        # Transazione per feed: più efficiente e coerente
-        cur.execute("BEGIN;")
+        # NIENTE transazione che avvolge il ciclo: il lock di scrittura
+        # verrebbe tenuto per tutto il giro, download inclusi, e la webapp
+        # (busy_timeout 3s) perderebbe scritture in silenzio. Due transazioni
+        # brevi per item, con la rete in mezzo e fuori da entrambe.
         for e in parsed.entries:
             if processed_new >= PER_FEED_MAX_NEW_ITEMS_PER_RUN:
                 break
@@ -260,6 +324,7 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
                     item_id = cur.lastrowid
                     added += 1
                     processed_new += 1
+                    con.commit()   # chiudi prima del download
                 except sqlite3.IntegrityError:
                     # collisione su UNIQUE(feed_id, link) / guid: recupera id e prosegui come existing
                     row = cur.execute("SELECT id, text_path, content_hash FROM items WHERE feed_id=? AND link=?",
@@ -305,7 +370,8 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
             # Aggiorna FTS (delete+insert)
             fts_delete_insert(cur, item_id, title, text, link, feed_title)
 
-        cur.execute("COMMIT;")
+            con.commit()
+
         con.commit()
 
         # checkpoint leggero post-feed (riduce rischio di WAL enorme)

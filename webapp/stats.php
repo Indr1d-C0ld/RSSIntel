@@ -44,6 +44,23 @@ $items_7d   = q1($db, "SELECT COUNT(*) FROM items WHERE COALESCE(published_at,fe
 $span_days  = ($first_item !== '') ? max(1, (int)round((time() - strtotime($first_item)) / 86400)) : 1;
 $avg_day    = round($tot_items / $span_days, 1);
 
+/* ---------- Coerenza dei fusi ----------
+   I bucket giornalieri/mensili usano il 'localtime' di SQLite, cioe' il fuso
+   del SISTEMA, mentre le etichette sono generate da PHP. Con date.timezone=UTC
+   in php.ini e il sistema su Europe/Rome i due divergevano di due ore, e fra
+   mezzanotte e le 02:00 le etichette finivano sul giorno sbagliato.
+   lib.php ora fissa il fuso di PHP a RSSINTEL_TZ; qui si verifica che il
+   sistema concordi, cosi' la divergenza si vede invece di restare nascosta. */
+$tz_mismatch = '';
+{
+  $sqlite_local = (string)$db->querySingle("SELECT datetime('now','localtime')");
+  $php_local    = (new DateTime('now', new DateTimeZone(RSSINTEL_TZ)))->format('Y-m-d H:i');
+  if ($sqlite_local !== '' && substr($sqlite_local, 0, 16) !== $php_local) {
+    $tz_mismatch = 'SQLite (fuso di sistema) dice ' . substr($sqlite_local, 0, 16)
+                 . ', il portale (' . RSSINTEL_TZ . ') dice ' . $php_local;
+  }
+}
+
 /* ---------- Raccolta per giorno (ultimi 30) — bucket in ora di Roma ---------- */
 $by_day = [];
 $res = $db->query("
@@ -143,6 +160,16 @@ function human_bytes(int $b): string {
       Media: <b><?=$avg_day?></b>/giorno (su <?=$span_days?> giorni)
     </div>
   </div>
+
+  <?php if ($tz_mismatch): ?>
+    <div class="card">
+      <b>Attenzione:</b> fuso orario incoerente fra database e applicazione, i
+      grafici per giorno/mese possono slittare.
+      <div class="meta" style="margin-top:6px"><?=h($tz_mismatch)?></div>
+      <div class="meta">Allinea il fuso del sistema a <code><?=h(RSSINTEL_TZ)?></code>
+        (<code>timedatectl set-timezone <?=h(RSSINTEL_TZ)?></code>).</div>
+    </div>
+  <?php endif; ?>
 
   <div class="card">
     <b>Articoli raccolti — ultimi 30 giorni</b>

@@ -1,5 +1,100 @@
 # Changelog
 
+## 2026-09-15 (2) — Audit: chiusi i punti rimanenti (lotti A, B, C)
+
+Seguito dell'audit del 15/09: i reperti oltre i primi cinque, applicati in tre
+lotti verificabili separatamente. Ogni fix e' stato misurato prima e dopo.
+
+### Sicurezza (lotto A)
+
+- **SSRF nel fetcher** (`fetcher/rssintel_fetch.py`). Gli URL degli articoli
+  arrivano dal contenuto dei feed remoti, cioe' da input non fidato, e venivano
+  scaricati senza alcun filtro con `allow_redirects=True`. Nuove
+  `is_public_url()` (solo http/https, host risolto e ogni indirizzo dev'essere
+  pubblico secondo `ipaddress.is_global`) e `get_checked()` (redirect seguiti a
+  mano, rivalidando ogni salto: con i redirect automatici un 302 verso la rete
+  interna aggirava il controllo). Applicato anche agli URL dei feed.
+  Verificato: bloccati loopback, `169.254.169.254`, LAN, `file://`, `ftp://`;
+  i 24 feed attivi e 200 link reali passano invariati.
+- **Schema `javascript:` negli href** (`webapp/lib.php` + 5 template).
+  `h()` impedisce di uscire dall'attributo ma non filtra lo schema: un item con
+  `link = javascript:...` produceva un'ancora che, se cliccata, eseguiva script
+  nell'origine del portale. Nuova `safe_url()`; se lo schema non e' http/https
+  il link diventa testo. Aggiunto `rel="noopener noreferrer"`.
+- **Enumerazione utenti per timing** (`webapp/login.php`). Il corto-circuito
+  `!$row || !password_verify(...)` saltava bcrypt per gli utenti inesistenti,
+  rendendo misurabile quali username esistono. Ora la verifica avviene sempre,
+  contro un hash fittizio di pari costo. Misurato: 283 ms contro 277 ms.
+- **Bootstrap senza rate-limit** (`webapp/login.php`): la condizione
+  `!$bootstrap &&` escludeva proprio il percorso anonimo di creazione del primo
+  amministratore.
+
+### Integrita' dei dati (lotto B)
+
+- **Transazione del fetcher aperta durante l'I/O di rete**
+  (`fetcher/rssintel_fetch.py`). Il `BEGIN` prendeva il lock di scrittura alla
+  prima INSERT e lo teneva fino a fine ciclo, inclusi fino a 50 download da 25s.
+  In WAL i lettori non si bloccano ma gli scrittori si': la webapp
+  (`busy_timeout` 3s) perdeva scritture, e `log_access()` ingoia l'eccezione,
+  quindi sparivano righe di access_log in silenzio a ogni fetch. Ora due
+  transazioni brevi per item con la rete fuori da entrambe.
+  Misurato su fetch reale di 8 articoli, con uno scrittore concorrente:
+  **prima 4 riuscite / 3 fallite, dopo 49 riuscite / 0 fallite**.
+- **Eliminazione utente** (`webapp/users.php`). `favorites`, `saved_searches` e
+  `annotations` sono legati allo username, non a `users.id`: eliminando la sola
+  riga utente restavano orfani, e un utente ricreato con lo stesso nome ne
+  ereditava favoriti, ricerche salvate e paternita' delle annotazioni. Ora, in
+  transazione: dati personali rimossi, annotazioni conservate (sono lavoro
+  d'archivio condiviso) ma riattribuite a «nome (eliminato)».
+- **Eliminazione feed** (`webapp/feeds.php`): `DELETE` cascata su items e da li'
+  su annotazioni e favoriti. La conferma diceva solo "Eliminare feed #N?". Ora
+  ogni feed mostra il conteggio articoli e la conferma dichiara cosa va perso,
+  indicando «Disabilita» come alternativa reversibile.
+- **`day` non validato** (`webapp/browse.php`): finiva in `new DateTime()` e un
+  valore non conforme (`?day=pwned`) faceva rispondere 500. Ora solo date ISO
+  reali, altrimenti si ricade su oggi.
+- **CSV injection** (`webapp/feeds.php`): i titoli dei feed vengono dal feed
+  remoto; se iniziano con `= + - @` venivano interpretati come formule
+  all'apertura del CSV esportato.
+- **Tetti di lunghezza** (`webapp/annotations.php`, `webapp/favorites.php`):
+  note e quote erano illimitate; il percorso `add` dei favoriti saltava il
+  limite che `note` applicava.
+- **Password oltre 72 byte** (`webapp/lib.php` + login/users/profile): bcrypt le
+  troncava in silenzio. Nuova `password_length_error()`, rifiutate.
+- **Prepared statement** per la lookup dei tag (`webapp/annotations.php`), unico
+  punto rimasto con una query costruita per concatenazione.
+
+### Prestazioni e igiene (lotto C)
+
+- **Query cronologica** (`schema.sql`, `webapp/browse.php`).
+  `COALESCE(published_at, fetched_at)` non e' sargable: nessun indice esistente
+  poteva servire e il piano era SCAN di tutte le righe di `items` piu' un
+  B-tree temporaneo, a ogni caricamento. Nuovo indice d'espressione
+  `idx_items_when`: **da 1,022s a 0,004s**.
+- **Indice duplicato** rimosso: `idx_items_pub` e `idx_items_published_at` erano
+  lo stesso indice su `published_at` (per una colonna sola SQLite scorre in
+  entrambe le direzioni; piani verificati identici). Costavano spazio e una
+  scrittura in piu' a ogni articolo.
+- **Fusi orari** (`webapp/lib.php`, `webapp/accessi.php`, `webapp/stats.php`).
+  `date.timezone` era UTC mentre il sistema (e quindi il `'localtime'` di
+  SQLite) e' su Europe/Rome: i filtri data di Accessi confrontavano giorni
+  italiani con timestamp UTC, e Statistiche generava le etichette con PHP e i
+  bucket con SQL, sfasati di due ore. Ora `lib.php` fissa `RSSINTEL_TZ`, nuova
+  `day_bounds_utc()` per i confronti, e Statistiche segnala in pagina se
+  database e applicazione dovessero divergere.
+- **Ciclo geo** (`webapp/accessi.php`): faceva una query per ogni IP conosciuto
+  a ogni caricamento; ora la cache si legge in una sola query.
+- **Referrer verso ipinfo.io** (`webapp/accessi.php`): i link inviavano a terzi
+  l'URL di Accessi, che puo' contenere username e filtri. Aggiunto
+  `rel="noopener noreferrer"`.
+- **Conservazione del log accessi** (`webapp/lib.php`, `webapp/accessi.php`,
+  `config.sample.php`): `access_log` cresceva senza limite e senza modo di
+  potarlo. Nuova `access_log_retention_days` — **default 0, cioe' illimitata**:
+  un default che cancella dati senza che siano stati chiesti e' la scelta
+  sbagliata, quindi la potatura si attiva solo se configurata. Con un valore
+  positivo avviene da sola durante il traffico; in Accessi c'e' comunque un
+  comando per potare a mano indicando i giorni.
+
 ## 2026-09-15 — Audit di sicurezza: 5 correzioni (2 critiche)
 
 Esito di un audit completo della piattaforma. Tutti i reperti sono stati

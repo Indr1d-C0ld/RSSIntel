@@ -32,6 +32,13 @@ if ($action === 'add') {
   if ($item_id_raw === '' || !ctype_digit($item_id_raw) || $note === '') {
     out(['ok'=>false,'error'=>'item_id/note mancanti o non validi'], 400);
   }
+  // Senza tetto, una POST poteva memorizzare megabyte per annotazione.
+  if (mb_strlen($note, 'UTF-8') > ANNOTATION_MAX_NOTE) {
+    out(['ok'=>false,'error'=>'nota troppo lunga (max ' . ANNOTATION_MAX_NOTE . ' caratteri)'], 413);
+  }
+  if (mb_strlen($quote, 'UTF-8') > ANNOTATION_MAX_QUOTE) {
+    out(['ok'=>false,'error'=>'quote troppo lungo (max ' . ANNOTATION_MAX_QUOTE . ' caratteri)'], 413);
+  }
   $item_id = (int)$item_id_raw;
 
   // opzionale: verifica esistenza item
@@ -67,9 +74,13 @@ if ($action === 'add') {
         $st->bindValue(':n', $tag_name, SQLITE3_TEXT);
         $st->execute();
 
-        $tag_id = (int)$db->querySingle(
-          "SELECT id FROM tags WHERE name=" . "'" . SQLite3::escapeString($tag_name) . "'"
-        );
+        // Prepared statement, coerente col resto del codice: escapeString
+        // funzionava (il tag e' gia' filtrato da regex) ma era l'unico punto
+        // con una query costruita per concatenazione.
+        $tq = $db->prepare("SELECT id FROM tags WHERE name = :n");
+        $tq->bindValue(':n', $tag_name, SQLITE3_TEXT);
+        $tr = $tq->execute()->fetchArray(SQLITE3_ASSOC);
+        $tag_id = $tr ? (int)$tr['id'] : 0;
 
         if ($tag_id > 0) {
           $st2 = $db->prepare("INSERT OR IGNORE INTO annotation_tags(annotation_id, tag_id) VALUES(:a,:t)");
@@ -102,6 +113,12 @@ if ($action === 'edit') {
   $quote = trim((string)($_POST['quote'] ?? ''));
 
   if ($id <= 0 || $note === '') out(['ok'=>false,'error'=>'id/note non validi'], 400);
+  if (mb_strlen($note, 'UTF-8') > ANNOTATION_MAX_NOTE) {
+    out(['ok'=>false,'error'=>'nota troppo lunga (max ' . ANNOTATION_MAX_NOTE . ' caratteri)'], 413);
+  }
+  if (mb_strlen($quote, 'UTF-8') > ANNOTATION_MAX_QUOTE) {
+    out(['ok'=>false,'error'=>'quote troppo lungo (max ' . ANNOTATION_MAX_QUOTE . ' caratteri)'], 413);
+  }
 
   $row = $db->querySingle("SELECT author FROM annotations WHERE id=".(int)$id, true);
   if (!$row) out(['ok'=>false,'error'=>'annotazione non trovata'], 404);

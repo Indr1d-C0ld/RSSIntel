@@ -35,6 +35,16 @@ return [
     // per retrocompatibilita'.
     'admins' => ['admin'],
 
+    // Giorni di conservazione del log accessi (accessi.php).
+    // 0 (default) = conservazione illimitata, nessuna cancellazione automatica.
+    // Un valore positivo attiva la potatura: avviene da sola, saltuariamente,
+    // durante il normale traffico; da accessi.php si puo' anche forzare subito.
+    //
+    // Da valutare consapevolmente: access_log registra una riga per richiesta
+    // HTTP con IP, user-agent, referer e query string, e quest'ultima per
+    // search.php contiene i termini cercati dagli utenti.
+    'access_log_retention_days' => 0,
+
     // Geolocalizzazione degli IP nel log accessi (accessi.php): se true, gli IP
     // vengono risolti a paese via ip-api.com (gratuito, senza API key), con
     // cache di 30 giorni in ip_geo_cache. Chiamata fatta dal server.

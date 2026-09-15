@@ -99,7 +99,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $r;
         <div class="meta" style="margin-top:6px">
           <?=h(fmt_dt((string)$r['created_at']))?>
           <?php if (!empty($r['updated_at'])): ?> · aggiornato: <?=h(fmt_dt((string)$r['updated_at']))?><?php endif; ?>
-          <?php if (!empty($r['item_link'])): ?> · <a href="<?=h((string)$r['item_link'])?>" target="_blank">Apri fonte</a><?php endif; ?>
+          <?php if ($u = safe_url((string)$r['item_link'])): ?> · <a href="<?=$u?>" target="_blank" rel="noopener noreferrer">Apri fonte</a><?php endif; ?>
         </div>
 
         <?php if (!empty($r['quote'])): ?>

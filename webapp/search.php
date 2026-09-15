@@ -363,7 +363,9 @@ function saved_url(array $s): string {
               <div class="meta result-meta">
                 <?=h(fmt_dt((string)($r['published_at'] ?: $r['fetched_at'])))?>
                 <?php if (!empty($r['link'])): ?>
-                  · <a href="<?=h((string)$r['link'])?>" target="_blank">Apri fonte</a>
+                  <?php if ($u = safe_url((string)$r['link'])): ?>
+                    · <a href="<?=$u?>" target="_blank" rel="noopener noreferrer">Apri fonte</a>
+                  <?php endif; ?>
                 <?php endif; ?>
               </div>
 

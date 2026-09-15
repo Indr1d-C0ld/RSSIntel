@@ -8,6 +8,28 @@ require_role('admin');
 $db = db_rw();          // rw: serve alla cache geo
 logging_ensure($db);
 
+$flash = $_SESSION['flash'] ?? null;
+unset($_SESSION['flash']);
+
+/* ---------------- potatura manuale del log ---------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  if (!csrf_check()) { http_response_code(403); die('CSRF non valido'); }
+  if (($_POST['action'] ?? '') === 'prune') {
+    $days = (int)($_POST['days'] ?? access_log_retention_days());
+    try {
+      $n = access_log_prune($db, max(1, $days));
+      $_SESSION['flash'] = ['ok', sprintf(
+        '%s righe eliminate dal log (piu' . "'" . ' vecchie di %d giorni).',
+        number_format($n, 0, ',', '.'), max(1, $days)
+      )];
+    } catch (Throwable $e) {
+      $_SESSION['flash'] = ['err', $e->getMessage()];
+    }
+  }
+  header('Location: accessi.php');
+  exit;
+}
+
 $has_log = (bool)$db->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='access_log'");
 
 /* ---------------- filtri log ---------------- */
@@ -21,8 +43,10 @@ $per    = 50;
 
 $where = [];
 $bind  = [];
-if ($f_from !== '') { $where[] = "ts >= :from"; $bind[':from'] = $f_from . ' 00:00:00'; }
-if ($f_to   !== '') { $where[] = "ts <= :to";   $bind[':to']   = $f_to . ' 23:59:59'; }
+// ts e' UTC; le date scelte qui sono giorni di calendario italiano. Prima
+// venivano confrontate direttamente, sbagliando di 1-2 ore agli estremi.
+if ($f_from !== '') { $where[] = "ts >= :from"; $bind[':from'] = day_bounds_utc($f_from)[0]; }
+if ($f_to   !== '') { $where[] = "ts <= :to";   $bind[':to']   = day_bounds_utc($f_to)[1]; }
 if ($f_user !== '') { $where[] = "COALESCE(username,'') = :u"; $bind[':u'] = $f_user; }
 if ($f_path !== '') { $where[] = "path = :p"; $bind[':p'] = $f_path; }
 if ($f_q    !== '') {
@@ -58,7 +82,12 @@ $sum = ['req' => 0, 'ips' => 0, 'today' => 0, 'users' => 0, 'd24' => 0];
 if ($has_log) {
   $sum['req']   = (int)$db->querySingle("SELECT COUNT(*) FROM access_log");
   $sum['ips']   = (int)$db->querySingle("SELECT COUNT(DISTINCT ip) FROM access_log");
-  $sum['today'] = (int)$db->querySingle("SELECT COUNT(*) FROM access_log WHERE date(ts,'localtime') = date('now','localtime')");
+  // Niente 'localtime' (dipende dal fuso del sistema): estremi calcolati in PHP.
+  [$today_a, $today_b] = day_bounds_utc(date('Y-m-d'));
+  $ts = $db->prepare("SELECT COUNT(*) c FROM access_log WHERE ts BETWEEN :a AND :b");
+  $ts->bindValue(':a', $today_a, SQLITE3_TEXT);
+  $ts->bindValue(':b', $today_b, SQLITE3_TEXT);
+  $sum['today'] = (int)$ts->execute()->fetchArray(SQLITE3_ASSOC)['c'];
   $sum['users'] = (int)$db->querySingle("SELECT COUNT(DISTINCT username) FROM access_log WHERE username IS NOT NULL AND username <> ''");
   $sum['d24']   = (int)$db->querySingle("SELECT COUNT(*) FROM access_log WHERE ts >= datetime('now','-1 day')");
 }
@@ -128,18 +157,25 @@ if ($has_log) {
     while ($x = $r->fetchArray(SQLITE3_ASSOC)) $ips_seen[(string)$x['ip']] = true;
   }
 
+  // Carica l'intera cache in una sola query. Prima si chiamava resolve_ip_geo()
+  // per OGNI ip noto, cioe' una query preparata a testa: il costo cresceva con
+  // il numero di IP distinti nel log a ogni caricamento di pagina.
   $cached = [];
-  $r = $db->query("SELECT ip FROM ip_geo_cache");
-  while ($x = $r->fetchArray(SQLITE3_ASSOC)) $cached[(string)$x['ip']] = true;
+  $r = $db->query("SELECT ip, country_code, country_name FROM ip_geo_cache");
+  while ($x = $r->fetchArray(SQLITE3_ASSOC)) $cached[(string)$x['ip']] = $x;
 
   foreach (array_keys($ips_seen) as $ip) {
-    if (!isset($cached[$ip])) {
-      if (!ipgeo_enabled() || $geo_budget <= 0) { $geo_pending++; continue; }
-      $geo_budget--;
+    if (isset($cached[$ip])) {
+      $cc = $cached[$ip]['country_code'];
+      $geo[$ip] = $cc ? (flag_emoji((string)$cc) . ' ' . ($cached[$ip]['country_name'] ?: $cc)) : '';
+      continue;
     }
+    // Non in cache: risolvibile solo se ipgeo e' attivo e c'e' budget.
+    if (!ipgeo_enabled() || $geo_budget <= 0) { $geo_pending++; continue; }
+    $geo_budget--;
     $g = resolve_ip_geo($db, $ip);
     $geo[$ip] = $g['country_code']
-      ? (flag_emoji($g['country_code']) . ' ' . ($g['country_name'] ?: $g['country_code']))
+      ? (flag_emoji((string)$g['country_code']) . ' ' . ($g['country_name'] ?: $g['country_code']))
       : '';
   }
 }
@@ -199,6 +235,10 @@ function bar_pct(int $v, int $max): string {
 
 <div class="wrap">
 
+  <?php if ($flash): ?>
+    <div class="card"><b><?= $flash[0] === 'ok' ? 'OK:' : 'Errore:' ?></b> <?=h((string)$flash[1])?></div>
+  <?php endif; ?>
+
   <div class="card">
     <b>Attività in corso</b> <span class="meta">(ultimi 5 minuti)</span>
     <hr>
@@ -220,7 +260,7 @@ function bar_pct(int $v, int $max): string {
               <td class="col-sec"><?php if ($a['role']): ?><span class="badge"><?=h((string)$a['role'])?></span><?php endif; ?></td>
               <td class="nowrap">
                 <?=h((string)$a['ip'])?>
-                <a href="https://ipinfo.io/<?=urlencode((string)$a['ip'])?>" target="_blank" title="ipinfo.io">🔍</a>
+                <a href="https://ipinfo.io/<?=urlencode((string)$a['ip'])?>" target="_blank" rel="noopener noreferrer" title="ipinfo.io">🔍</a>
               </td>
               <td class="col-sec"><?=h((string)($geo[$a['ip']] ?? ''))?></td>
               <td class="meta"><?=h((string)$a['method'])?> <?=h((string)$a['path'])?></td>
@@ -255,6 +295,28 @@ function bar_pct(int $v, int $max): string {
     <?php if (!ipgeo_enabled()): ?>
       <div class="meta" style="margin-top:8px">Geolocalizzazione IP disattivata (imposta <code>'ipgeo' =&gt; true</code> in config.php).</div>
     <?php endif; ?>
+    <hr>
+    <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center">
+      <div class="meta grow">
+        <b>Conservazione</b>:
+        <?php $ret = access_log_retention_days(); ?>
+        <?php if ($ret > 0): ?>
+          le righe piu' vecchie di <b><?= $ret ?> giorni</b> vengono eliminate da sole.
+        <?php else: ?>
+          <b>illimitata</b> (<code>'access_log_retention_days' =&gt; 0</code>).
+        <?php endif; ?>
+        Il log contiene IP, user-agent, referer e query string &mdash; per
+        <code>search.php</code> quest'ultima e' il termine cercato.
+      </div>
+      <form method="post" class="row" style="gap:6px"
+            onsubmit="return confirm('Eliminare definitivamente le righe di log piu\u2019 vecchie del numero di giorni indicato?')">
+        <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+        <input type="hidden" name="action" value="prune">
+        <input type="number" name="days" min="1" max="3650" value="<?= $ret > 0 ? $ret : 90 ?>"
+               style="width:6em" title="giorni da conservare">
+        <button class="btn" type="submit">Pota ora</button>
+      </form>
+    </div>
   </div>
 
   <div class="card">
@@ -334,7 +396,7 @@ function bar_pct(int $v, int $max): string {
             <td style="white-space:nowrap"><?=h(fmt_dt((string)$x['ts']))?></td>
             <td style="white-space:nowrap">
               <?=h((string)$x['ip'])?>
-              <a href="https://ipinfo.io/<?=urlencode((string)$x['ip'])?>" target="_blank" title="ipinfo.io">🔍</a>
+              <a href="https://ipinfo.io/<?=urlencode((string)$x['ip'])?>" target="_blank" rel="noopener noreferrer" title="ipinfo.io">🔍</a>
             </td>
             <td class="col-sec"><?=h((string)($geo[$x['ip']] ?? ''))?></td>
             <td><?=h((string)($x['username'] ?: '—'))?></td>
