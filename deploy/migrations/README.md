@@ -20,3 +20,4 @@ completo, cosi' anche il worker delle allerte trova le tabelle dal primo giro.
 |---|---|
 | `2026-10-08_allerte.sql` | colonne `watch`, `last_checked_at`, `last_error` su `saved_searches`; tabella `watch_hits` |
 | `2026-10-08_fonti.sql` | colonne `category`, `reliability`, `reliability_note` su `feeds` |
+| `2026-10-08_fts_cancellazioni.sql` | trigger `items_ad`: l'indice FTS segue anche le cancellazioni (eliminando un feed le righe restavano); pulizia degli orfani. Rieseguibile |

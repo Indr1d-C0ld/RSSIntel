@@ -35,6 +35,11 @@ return [
     // per retrocompatibilita'.
     'admins' => ['admin'],
 
+    // Cartella dei testi estratti, se diversa da <cartella del db>/text (deve
+    // coincidere con RSSINTEL_TXT_DIR del fetcher). Serve all'eliminazione di un
+    // feed in feeds.php, che rimuove anche i file di testo dei suoi articoli.
+    // 'text_dir' => '/var/lib/rssintel/text',
+
     // Cartella delle catture visive (PNG a piena pagina degli articoli).
     // DEVE stare fuori dal webroot: i file sono serviti da capture.php dopo
     // require_login(), mentre sotto la webroot sarebbero scaricabili da

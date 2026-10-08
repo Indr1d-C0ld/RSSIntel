@@ -186,8 +186,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           throw new RuntimeException('id non valido');
         }
 
+        // La cascata (items, annotazioni, favoriti, catture, allerte) e il
+        // trigger items_ad (indice FTS) ripuliscono il database, ma non i file:
+        // i testi estratti restavano su disco e il backup continuava a copiarli
+        // (2.149 file orfani trovati l'08/10/2026). Si raccolgono gli id PRIMA
+        // della cascata, si cancellano le righe, POI i file: se il processo cade
+        // in mezzo restano solo file orfani, mai righe che puntano al nulla.
+        $ids = [];
+        $st = $db->prepare("SELECT id, text_path FROM items WHERE feed_id = :f");
+        $st->bindValue(':f', $id, SQLITE3_INTEGER);
+        $r = $st->execute();
+        $extra = [];
+        while ($x = $r->fetchArray(SQLITE3_ASSOC)) {
+          $ids[] = (int)$x['id'];
+          if (!empty($x['text_path'])) $extra[] = (string)$x['text_path'];
+        }
+
         $db->exec("DELETE FROM feeds WHERE id=" . (int)$id);
-        $msg = 'Feed eliminato.';
+
+        // Molti articoli hanno sia <id>.txt (versioni vecchie del fetcher) sia
+        // <id>.txt.gz, ma nel DB e' registrato uno solo: si tolgono entrambi.
+        $text_dir = rtrim((string)(cfg()['text_dir'] ?? dirname((string)cfg()['db_path']) . '/text'), '/');
+        $root = realpath($text_dir);
+        $removed = 0;
+        if ($root !== false) {
+          $cands = $extra;
+          foreach ($ids as $iid) { $cands[] = "$text_dir/$iid.txt"; $cands[] = "$text_dir/$iid.txt.gz"; }
+          foreach (array_unique($cands) as $p) {
+            $rp = realpath($p);
+            // solo dentro la cartella dei testi: un percorso anomalo nel DB non
+            // deve poter diventare la cancellazione di un file qualunque
+            if ($rp !== false && str_starts_with($rp, $root . '/') && @unlink($rp)) $removed++;
+          }
+        }
+        $msg = sprintf('Feed eliminato: %s articoli e %s file di testo rimossi.',
+                       number_format(count($ids), 0, ',', '.'), number_format($removed, 0, ',', '.'));
       }
 
       elseif ($action === 'import') {

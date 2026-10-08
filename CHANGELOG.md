@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-08 (3) — Eliminare un feed ora ripulisce anche indice e testi
+
+Emerso con il primo sfoltimento reale delle fonti (4 feed eliminati, ~2.050
+articoli): la cascata `feeds -> items` toglieva gli articoli dal database ma non
+dall'indice di ricerca ne' dal disco. Le ricerche non li mostravano (la query
+unisce l'indice agli articoli esistenti), ma il testo delle fonti eliminate
+restava nel DB e nei backup. Il difetto c'era dall'inizio: non era mai emerso
+perche' nessun feed era mai stato eliminato.
+
+- `schema.sql`, `deploy/migrations/2026-10-08_fts_cancellazioni.sql`: trigger
+  `items_ad` (AFTER DELETE su items -> DELETE da items_fts), che si affianca a
+  `items_ai`. Verificato che scatta anche sulle cancellazioni prodotte dalla
+  cascata della chiave esterna. La migrazione toglie le righe gia' orfane
+  (2.048) ed e' rieseguibile.
+- `webapp/feeds.php`: «Elimina» raccoglie gli id degli articoli prima della
+  cascata, cancella le righe, poi i file di testo — sia `<id>.txt` sia
+  `<id>.txt.gz`, perche' 1.416 articoli hanno entrambe le forme (versioni
+  vecchie del fetcher) e nel DB e' registrata una sola. Solo dentro la cartella
+  dei testi: un `text_path` anomalo non puo' diventare la cancellazione di un
+  file qualunque. Collaudo: 16 articoli e 23 file rimossi, testi degli altri
+  feed intatti, file esterno indicato da un percorso manomesso non toccato.
+- `config.sample.php`: `text_dir` opzionale, se i testi non stanno in
+  `<cartella del db>/text`.
+
 ## 2026-10-08 (2) — Fase 1: bollettino, allerte, classificazione delle fonti
 
 Prima fase del piano nato dalla revisione dell'08/10: i dati d'uso mostravano una

@@ -53,6 +53,13 @@ CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
   VALUES (new.id, COALESCE(new.title,''), '', COALESCE(new.link,''), '');
 END;
 
+-- ...e anche in cancellazione: senza questo trigger, eliminare un feed (cascata
+-- su items) lasciava le righe degli articoli nell'indice. Scatta anche sulle
+-- cancellazioni prodotte dalla cascata della chiave esterna.
+CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
+  DELETE FROM items_fts WHERE rowid = old.id;
+END;
+
 CREATE TABLE IF NOT EXISTS annotations (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   item_id     INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
