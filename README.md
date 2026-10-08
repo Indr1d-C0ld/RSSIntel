@@ -62,6 +62,28 @@ systemctl enable --now rssintel-fetch.timer
 Il fetcher legge i percorsi anche da variabili d'ambiente
 (`RSSINTEL_DB`, `RSSINTEL_TXT_DIR`, `RSSINTEL_RAW_DIR`, `RSSINTEL_UA`).
 
+## Catture visive
+
+Da un articolo (o dai Favoriti) un utente `collaborator`/`admin` può chiedere
+una **cattura a pagina intera** della pagina originale: un PNG con miniatura,
+impronta SHA-256, URL finale dopo i redirect e data. Le catture sono versionate
+(ricatturare aggiunge, non sostituisce) ed eliminabili da chi le ha richieste o
+da un admin.
+
+- La pagina **accoda** soltanto: il rendering (10-30 s di Chromium) lo esegue
+  `fetcher/rssintel_capture.py`, avviato da un timer systemd
+  (`deploy/rssintel-capture.*.sample`), una cattura alla volta.
+- Il lavoro passa dallo stesso filtro anti-SSRF del fetcher: solo http/https e
+  solo indirizzi pubblici, redirect rivalidati a ogni salto.
+- `chromium --screenshot` cattura solo il viewport: la pagina intera si ottiene
+  via protocollo DevTools (`Page.captureScreenshot` con `captureBeyondViewport`),
+  con un client minimo in `fetcher/cdp.py` (solo libreria standard).
+- I file stanno **fuori dalla webroot** (`captures_dir`, default
+  `<cartella del db>/captures`) e li serve `webapp/capture.php` dopo
+  l'autenticazione.
+
+Requisiti: `chromium` e Pillow nel Python che esegue il worker.
+
 ## Configurazione (`config.php`)
 
 | Chiave | Significato |

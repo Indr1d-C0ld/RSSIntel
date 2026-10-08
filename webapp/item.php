@@ -88,6 +88,8 @@ $text_html = h($text);
 
 $may_annotate = can_annotate();
 $is_fav = is_favorite($db, $item_id);
+$item_caps = captures_for_items($db, [$item_id])[$item_id] ?? [];
+$cap_waiting = $item_caps && in_array((string)$item_caps[0]['status'], ['pending','running'], true);
 
 $notes = [];
 $item_tags = [];
@@ -276,6 +278,83 @@ if ($item_tags) {
     <?php endif; ?>
 
     <hr>
+    <b>Cattura della pagina originale</b>
+    <div class="meta" style="margin-top:6px">
+      Istantanea a piena pagina del sito com'era al momento della cattura.
+      Le versioni si accumulano: e' il modo per vedere se una pagina cambia.
+    </div>
+
+    <?php if ($may_annotate): ?>
+      <form method="post" action="capture.php" style="margin-top:8px">
+        <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+        <input type="hidden" name="action" value="enqueue">
+        <input type="hidden" name="item_id" value="<?=$item_id?>">
+        <input type="hidden" name="ret" value="item.php?id=<?=$item_id?>">
+        <button class="btn" type="submit" <?= $cap_waiting ? 'disabled' : '' ?>>
+          <?= $item_caps ? '↻ Nuova cattura' : '📷 Cattura' ?>
+        </button>
+        <?php if ($cap_waiting): ?>
+          <span class="meta" id="cap-wait">⏳ <?=h(capture_badge($item_caps[0]))?>…</span>
+        <?php endif; ?>
+      </form>
+    <?php endif; ?>
+
+    <?php if (!$item_caps): ?>
+      <div class="meta" style="margin-top:8px">Nessuna cattura per questo articolo.</div>
+    <?php else: ?>
+      <div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap; align-items:flex-start">
+        <?php foreach ($item_caps as $c): ?>
+          <div style="width:130px">
+            <?php if ((string)$c['status'] === 'done'): ?>
+              <a href="capture.php?id=<?= (int)$c['id'] ?>" target="_blank" rel="noopener">
+                <img src="capture.php?id=<?= (int)$c['id'] ?>&amp;thumb=1" alt="cattura"
+                     style="width:130px; border:1px solid var(--border); display:block">
+              </a>
+              <div class="meta" style="margin-top:4px">
+                <?=h(fmt_dt((string)$c['finished_at']))?><br>
+                <?= (int)$c['width'] ?>×<?= (int)$c['height'] ?> ·
+                <?= number_format(((int)$c['bytes']) / 1048576, 1, ',', '.') ?> MB
+              </div>
+              <div class="meta" style="font-size:.7rem; word-break:break-all"
+                   title="impronta SHA-256 del file">
+                <?=h(substr((string)$c['sha256'], 0, 16))?>…
+              </div>
+              <?php if (!empty($c['final_url']) && (string)$c['final_url'] !== (string)$c['url']): ?>
+                <div class="meta" style="font-size:.7rem">URL finale diverso da quello di partenza</div>
+              <?php endif; ?>
+              <?php if (is_admin() || (string)$c['requested_by'] === current_user()): ?>
+                <form method="post" action="capture.php" style="margin-top:4px"
+                      onsubmit="return confirm('Eliminare la cattura del <?=h(fmt_dt((string)$c['finished_at']))?>? Il file viene rimosso dal disco.')">
+                  <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+                  <input type="hidden" name="action" value="delete">
+                  <input type="hidden" name="capture_id" value="<?= (int)$c['id'] ?>">
+                  <input type="hidden" name="ret" value="item.php?id=<?=$item_id?>">
+                  <button class="btn" type="submit" style="font-size:.72rem">🗑 Elimina</button>
+                </form>
+              <?php endif; ?>
+            <?php elseif ((string)$c['status'] === 'error'): ?>
+              <div class="meta" style="color:var(--red-stamp)">
+                ⚠ fallita<br><?=h(fmt_dt((string)$c['requested_at']))?>
+              </div>
+              <div class="meta" style="font-size:.7rem"><?=h((string)($c['error'] ?: ''))?></div>
+              <?php if (is_admin() || (string)$c['requested_by'] === current_user()): ?>
+                <form method="post" action="capture.php" style="margin-top:4px">
+                  <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+                  <input type="hidden" name="action" value="delete">
+                  <input type="hidden" name="capture_id" value="<?= (int)$c['id'] ?>">
+                  <input type="hidden" name="ret" value="item.php?id=<?=$item_id?>">
+                  <button class="btn" type="submit" style="font-size:.72rem">🗑 Rimuovi</button>
+                </form>
+              <?php endif; ?>
+            <?php else: ?>
+              <div class="meta">⏳ <?=h(capture_badge($c))?><br><?=h(fmt_dt((string)$c['requested_at']))?></div>
+            <?php endif; ?>
+          </div>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
+
+    <hr>
     <b>Testo estratto</b>
     <?php if ($text === ''): ?>
       <div class="meta">Testo non disponibile (text_path mancante o file non presente).</div>
@@ -397,6 +476,29 @@ async function delNote(id) {
   }
   location.reload();
 }
+
+<?php if ($cap_waiting): ?>
+// Attende la fine della cattura in corso e aggiorna la sola etichetta di stato.
+(function () {
+  const item = <?= (int)$item_id ?>;
+  const tick = async () => {
+    try {
+      const r = await fetch('capture.php?status=1&items=' + item, { credentials: 'same-origin' });
+      const j = await r.json();
+      const c = (j.captures || [])[0];
+      if (c && c.status !== 'pending' && c.status !== 'running') {
+        const w = document.getElementById('cap-wait');
+        if (w) w.textContent = (c.status === 'done')
+          ? '✓ cattura pronta — ricarica per vederla'
+          : '⚠ cattura fallita: ' + (c.error || '');
+        return;
+      }
+    } catch (e) { /* riprova */ }
+    setTimeout(tick, 8000);
+  };
+  setTimeout(tick, 8000);
+})();
+<?php endif; ?>
 
 // --- Traduzione: motore locale EN->IT, solo sulla selezione, con limite ---
 (function() {

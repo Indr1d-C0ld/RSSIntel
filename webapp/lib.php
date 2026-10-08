@@ -487,6 +487,93 @@ function resolve_ip_geo(SQLite3 $dbw, string $ip): array {
   }
 }
 
+/* =====================  Catture visive  ===================== */
+
+/**
+ * Cartella delle catture. Sta FUORI dal webroot di proposito: sotto
+ * /data/html/ i file sarebbero scaricabili da chiunque senza autenticazione
+ * (stessa classe di problema dei backup *.php~). Vengono serviti da
+ * capture.php, che passa da require_login().
+ */
+function captures_dir(): string {
+  $d = (string)(cfg()['captures_dir'] ?? '');
+  if ($d === '') $d = dirname((string)cfg()['db_path']) . '/captures';
+  return rtrim($d, '/');
+}
+
+function captures_schema(): string {
+  return "
+    CREATE TABLE IF NOT EXISTS captures (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id      INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      requested_by TEXT    NOT NULL,
+      requested_at TEXT    NOT NULL DEFAULT (datetime('now')),
+      status       TEXT    NOT NULL DEFAULT 'pending',
+      started_at   TEXT,
+      finished_at  TEXT,
+      url          TEXT    NOT NULL,
+      final_url    TEXT,
+      png_path     TEXT,
+      width        INTEGER,
+      height       INTEGER,
+      bytes        INTEGER,
+      sha256       TEXT,
+      error        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_captures_item   ON captures(item_id, requested_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_captures_status ON captures(status, requested_at);
+  ";
+}
+
+function captures_ensure(SQLite3 $dbw): void { $dbw->exec(captures_schema()); }
+
+function captures_table_exists(SQLite3 $db): bool {
+  return (bool)$db->querySingle(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='captures'"
+  );
+}
+
+/**
+ * Catture di piu' articoli in una sola query (niente N+1 nell'elenco favoriti).
+ * Ritorna item_id => [righe, dalla piu' recente].
+ */
+function captures_for_items(SQLite3 $db, array $item_ids): array {
+  $out = [];
+  $ids = array_values(array_unique(array_map('intval', $item_ids)));
+  if (!$ids || !captures_table_exists($db)) return $out;
+  $in = implode(',', array_fill(0, count($ids), '?'));
+  $st = $db->prepare("
+    SELECT id, item_id, status, requested_at, finished_at, png_path,
+           width, height, bytes, sha256, final_url, error, requested_by
+    FROM captures WHERE item_id IN ($in)
+    ORDER BY requested_at DESC, id DESC
+  ");
+  foreach ($ids as $i => $v) $st->bindValue($i + 1, $v, SQLITE3_INTEGER);
+  $r = $st->execute();
+  while ($x = $r->fetchArray(SQLITE3_ASSOC)) $out[(int)$x['item_id']][] = $x;
+  return $out;
+}
+
+/** true se per questo articolo c'e' gia' una richiesta non conclusa. */
+function capture_in_flight(SQLite3 $db, int $item_id): bool {
+  if (!captures_table_exists($db)) return false;
+  $st = $db->prepare("SELECT 1 FROM captures
+                      WHERE item_id = :i AND status IN ('pending','running')");
+  $st->bindValue(':i', $item_id, SQLITE3_INTEGER);
+  return (bool)$st->execute()->fetchArray(SQLITE3_ASSOC);
+}
+
+/** Etichetta leggibile dello stato di una cattura. */
+function capture_badge(array $c): string {
+  return match ((string)$c['status']) {
+    'pending' => 'in coda',
+    'running' => 'in corso',
+    'done'    => 'pronta',
+    'error'   => 'errore',
+    default   => (string)$c['status'],
+  };
+}
+
 /* =====================  Tema grafico (scelto dall'admin per tutti)  ===================== */
 
 /**

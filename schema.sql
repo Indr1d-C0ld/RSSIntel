@@ -162,3 +162,28 @@ CREATE TABLE IF NOT EXISTS site_settings (
   value      TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Catture visive degli articoli (PNG a pagina intera), su richiesta.
+-- Il DB conserva solo metadati e percorso relativo: i file stanno in
+-- <cartella del db>/captures/<item_id>/<id>.png, FUORI dalla webroot, e li
+-- serve capture.php dopo require_login(). Li produce rssintel_capture.py
+-- (timer systemd). La webapp crea la tabella anche a runtime (capture.php).
+CREATE TABLE IF NOT EXISTS captures (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id      INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  requested_by TEXT    NOT NULL,
+  requested_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|running|done|error
+  started_at   TEXT,
+  finished_at  TEXT,
+  url          TEXT    NOT NULL,   -- congelato al momento della richiesta
+  final_url    TEXT,               -- dopo i redirect
+  png_path     TEXT,               -- relativo alla cartella delle catture
+  width        INTEGER,
+  height       INTEGER,
+  bytes        INTEGER,
+  sha256       TEXT,               -- impronta del file
+  error        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_captures_item   ON captures(item_id, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_captures_status ON captures(status, requested_at);

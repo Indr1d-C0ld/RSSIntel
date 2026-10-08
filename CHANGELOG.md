@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-10-08 — Catture visive
+
+- **Catture visive degli articoli** (in produzione dal 16/09/2026, qui versionate).
+  Da `item.php` o dai Favoriti un `collaborator`/`admin` accoda una cattura a
+  pagina intera della pagina originale (PNG + miniatura, SHA-256, URL finale,
+  dimensioni). Versionate, eliminabili da chi le ha richieste o da un admin.
+  - `webapp/capture.php` (nuovo): accodamento (POST, CSRF, ruolo), stato in JSON
+    per l'aggiornamento in pagina, consegna dei file dopo `require_login()` con
+    verifica che il percorso risolto cada nella cartella delle catture, ed
+    eliminazione (prima la riga, poi i file: se il processo cade in mezzo restano
+    solo file orfani, che il worker rimuove da solo).
+  - `webapp/lib.php`: `captures_dir()`, schema, `captures_for_items()` (una query
+    per tutto l'elenco), `capture_in_flight()`, `capture_badge()`.
+  - `webapp/favorites.php`, `webapp/item.php`: pulsanti, miniature, versioni.
+    L'aggiornamento dello stato avviene in posto, senza ricaricare la pagina:
+    nei Favoriti un reload cancellerebbe le note in corso di scrittura.
+  - `fetcher/rssintel_capture.py` (worker), `fetcher/cdp.py`, `fetcher/shot.py`.
+    `chromium --screenshot` cattura solo il viewport, e ritagliare il bianco di
+    una finestra molto alta e' stato provato e fallisce sulle pagine reali; la
+    pagina intera richiede il protocollo DevTools, parlato da `cdp.py` con la
+    sola libreria standard. Il rendering non avviene mai nella richiesta HTTP
+    (terrebbe un worker Apache per 10-30 s), ma in coda: `flock`, transazioni
+    brevi, filtro anti-SSRF importato dal fetcher, file 0644, pulizia orfani.
+  - `schema.sql`: tabella `captures`. Era stata creata in produzione con una
+    migrazione ma mancava dallo schema: un'installazione nuova non l'avrebbe avuta.
+- `deploy/rssintel-capture.service.sample`, `.timer.sample` (nuovi).
+- `README.md`: sezione sulle catture e requisiti (`chromium`, Pillow).
+
 ## 2026-09-15 (2) — Audit: chiusi i punti rimanenti (lotti A, B, C)
 
 Seguito dell'audit del 15/09: i reperti oltre i primi cinque, applicati in tre

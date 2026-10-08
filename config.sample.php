@@ -35,6 +35,14 @@ return [
     // per retrocompatibilita'.
     'admins' => ['admin'],
 
+    // Cartella delle catture visive (PNG a piena pagina degli articoli).
+    // DEVE stare fuori dal webroot: i file sono serviti da capture.php dopo
+    // require_login(), mentre sotto la webroot sarebbero scaricabili da
+    // chiunque. Se omessa: <cartella del db>/captures.
+    // Le catture le produce rssintel_capture.py, avviato da
+    // rssintel-capture.timer; richiede chromium installato.
+    // 'captures_dir' => '/var/lib/rssintel/captures',
+
     // Giorni di conservazione del log accessi (accessi.php).
     // 0 (default) = conservazione illimitata, nessuna cancellazione automatica.
     // Un valore positivo attiva la potatura: avviene da sola, saltuariamente,

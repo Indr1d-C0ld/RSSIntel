@@ -1,0 +1,21 @@
+[Unit]
+Description=RSSIntel - cattura visiva degli articoli in coda
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+# python3 di SISTEMA, non il venv: il venv non ha Pillow (serve per le
+# miniature), mentre il python di sistema ha requests + Pillow.
+ExecStart=/usr/bin/python3 /opt/rssintel/rssintel_capture.py
+WorkingDirectory=/opt/rssintel
+# Chromium apre molti file e vuole una home scrivibile per il profilo
+# temporaneo (creato e rimosso a ogni cattura sotto la tmp privata).
+Environment=HOME=/tmp
+PrivateTmp=true
+LimitNOFILE=8192
+# Una cattura non deve mai poter bloccare la macchina.
+TimeoutStartSec=900
+MemoryMax=2G
