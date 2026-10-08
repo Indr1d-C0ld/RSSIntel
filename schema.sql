@@ -12,7 +12,12 @@ CREATE TABLE IF NOT EXISTS feeds (
   last_status   INTEGER,
   last_error    TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at    TEXT
+  updated_at    TEXT,
+  -- classificazione dell'analista (feeds.php): tipo di testata e affidabilita'
+  -- della FONTE secondo il codice dell'Ammiragliato (A-F; NULL = non valutata)
+  category         TEXT,
+  reliability      TEXT,
+  reliability_note TEXT
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -92,6 +97,11 @@ CREATE TABLE IF NOT EXISTS saved_searches (
   feed_id      INTEGER,
   result_limit INTEGER,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  -- allerta: la ricerca viene rieseguita dopo ogni giro del fetcher sui soli
+  -- articoli nuovi (rssintel_watch.py), le corrispondenze in watch_hits
+  watch           INTEGER NOT NULL DEFAULT 0,
+  last_checked_at TEXT,
+  last_error      TEXT,
   UNIQUE(owner, name)
 );
 
@@ -187,3 +197,16 @@ CREATE TABLE IF NOT EXISTS captures (
 );
 CREATE INDEX IF NOT EXISTS idx_captures_item   ON captures(item_id, requested_at DESC);
 CREATE INDEX IF NOT EXISTS idx_captures_status ON captures(status, requested_at);
+
+-- Corrispondenze delle allerte. Niente storico all'attivazione: solo articoli
+-- indicizzati dopo. ON DELETE CASCADE su entrambi i lati: eliminare la ricerca
+-- o l'articolo elimina la corrispondenza.
+CREATE TABLE IF NOT EXISTS watch_hits (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  search_id INTEGER NOT NULL REFERENCES saved_searches(id) ON DELETE CASCADE,
+  item_id   INTEGER NOT NULL REFERENCES items(id)          ON DELETE CASCADE,
+  found_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  seen      INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(search_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_watch_hits_unseen ON watch_hits(search_id, seen);

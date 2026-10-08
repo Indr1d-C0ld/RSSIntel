@@ -70,6 +70,8 @@ $stmt = $db->prepare("
   SELECT i.id, i.feed_id, i.guid, i.title, i.link, i.author,
          i.published_at, i.fetched_at, i.raw_path, i.text_path,
          COALESCE(f.title, f.url) AS feed_title, f.url AS feed_url
+         " . source_select_cols($db)
+           . (feeds_classified($db) ? ", f.reliability_note AS src_note" : ", NULL AS src_note") . "
   FROM items i
   JOIN feeds f ON f.id = i.feed_id
   WHERE i.id = :id
@@ -211,7 +213,13 @@ if ($item_tags) {
 
     <div class="meta" style="margin-top:6px">
       Feed URL: <?=h((string)$row['feed_url'])?>
+      <?= source_badge($row['src_category'], $row['src_reliability']) ?>
     </div>
+    <?php if (!empty($row['src_note'])): ?>
+      <div class="meta" style="margin-top:4px">
+        Valutazione della fonte: <?=h((string)$row['src_note'])?>
+      </div>
+    <?php endif; ?>
 
     <?php if (!empty($row['guid'])): ?>
       <div class="meta">GUID: <?=h((string)$row['guid'])?></div>

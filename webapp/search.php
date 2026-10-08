@@ -45,6 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   try {
     $dbw = db_rw();
     $dbw->exec(saved_searches_schema());
+    watch_ensure($dbw);
 
     if ($action === 'save') {
       $name = trim((string)($_POST['name'] ?? ''));
@@ -78,8 +79,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $st->bindValue(':l', $slim, SQLITE3_INTEGER);
         $st->execute();
-        $_SESSION['flash'] = ['ok', 'Ricerca «' . $name . '» salvata.'];
+
+        $want_watch = !empty($_POST['watch']);
+        if ($want_watch) {
+          // Il punto di partenza e' adesso: niente storico (su «Iran» sarebbero
+          // migliaia di vecchi articoli). Se l'allerta era gia' attiva, il suo
+          // punto di partenza resta quello che aveva.
+          $w = $dbw->prepare("
+            UPDATE saved_searches
+            SET last_checked_at = CASE WHEN watch = 1 THEN last_checked_at ELSE datetime('now') END,
+                watch = 1, last_error = NULL
+            WHERE owner = :o AND name = :n
+          ");
+          $w->bindValue(':o', $me, SQLITE3_TEXT);
+          $w->bindValue(':n', $name, SQLITE3_TEXT);
+          $w->execute();
+        }
+        $_SESSION['flash'] = ['ok', 'Ricerca «' . $name . '» salvata'
+          . ($want_watch ? ', con allerta: segnalerò i nuovi articoli in «Novità».' : '.')];
       }
+    } elseif ($action === 'watch_on' || $action === 'watch_off') {
+      $id = (int)($_POST['id'] ?? 0);
+      $on = ($action === 'watch_on');
+      $st = $dbw->prepare($on
+        ? "UPDATE saved_searches SET watch = 1, last_checked_at = datetime('now'), last_error = NULL
+           WHERE id = :id AND owner = :o AND watch = 0"
+        : "UPDATE saved_searches SET watch = 0 WHERE id = :id AND owner = :o");
+      $st->bindValue(':id', $id, SQLITE3_INTEGER);
+      $st->bindValue(':o', $me, SQLITE3_TEXT);
+      $st->execute();
+      $_SESSION['flash'] = ['ok', $on
+        ? 'Allerta attivata: da ora segnalo in «Novità» i nuovi articoli che corrispondono.'
+        : 'Allerta disattivata. Le corrispondenze gia\' trovate restano in «Novità».'];
     } elseif ($action === 'delete') {
       $id = (int)($_POST['id'] ?? 0);
       if ($id > 0) {
@@ -115,6 +146,9 @@ $page = (isset($_GET['page']) && ctype_digit((string)$_GET['page'])) ? max(1, (i
 $total = 0;
 $pages = 0;
 $has_feed = ($feed_id !== '' && ctype_digit($feed_id));
+$cat = (string)($_GET['cat'] ?? '');
+[$cat_sql, $cat_val] = source_category_filter($cat, $db);
+if ($cat_sql === '') $cat = '';
 
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
@@ -123,7 +157,7 @@ unset($_SESSION['flash']);
 $saved = [];
 if (saved_searches_table($db)) {
   $st = $db->prepare("
-    SELECT id, name, q, feed_id, result_limit, created_at
+    SELECT *
     FROM saved_searches
     WHERE owner = :o
     ORDER BY name COLLATE NOCASE ASC
@@ -132,6 +166,7 @@ if (saved_searches_table($db)) {
   $rs = $st->execute();
   while ($row = $rs->fetchArray(SQLITE3_ASSOC)) $saved[] = $row;
 }
+$unseen = watch_unseen_by_search($db, $me);
 
 $feeds = [];
 $resf = $db->query("
@@ -155,16 +190,18 @@ if ($q !== '') {
       throw new RuntimeException("Tabella FTS items_fts non trovata nel DB.");
     }
 
-    $feed_clause = $has_feed ? " AND i.feed_id = :fid " : "";
+    $feed_clause = ($has_feed ? " AND i.feed_id = :fid " : "") . $cat_sql;
 
     // Conteggio totale (per la paginazione).
     $cst = $db->prepare("
       SELECT COUNT(*) AS c
       FROM items_fts JOIN items i ON i.id = items_fts.rowid
+      JOIN feeds f ON f.id = i.feed_id
       WHERE items_fts MATCH :q $feed_clause
     ");
     $cst->bindValue(':q', $q, SQLITE3_TEXT);
     if ($has_feed) $cst->bindValue(':fid', (int)$feed_id, SQLITE3_INTEGER);
+    if ($cat_val !== null) $cst->bindValue(':cat', $cat_val, SQLITE3_TEXT);
     $cres = $cst->execute();
     $total = ($cres === false) ? 0 : (int)$cres->fetchArray(SQLITE3_ASSOC)['c'];
 
@@ -174,10 +211,11 @@ if ($q !== '') {
 
     // Esegue la SELECT dei risultati con l'espressione snippet passata.
     $run = function (string $snip_expr)
-        use ($db, $q, $has_feed, $feed_id, $feed_clause, $limit, $offset) {
+        use ($db, $q, $has_feed, $feed_id, $feed_clause, $cat_val, $limit, $offset) {
       $sql = "
         SELECT i.id, i.title, i.link, i.published_at, i.fetched_at,
-               COALESCE(f.title, f.url) AS feed_title,
+               COALESCE(f.title, f.url) AS feed_title
+               " . source_select_cols($db) . ",
                $snip_expr AS snip
         FROM items_fts
         JOIN items i ON i.id = items_fts.rowid
@@ -190,6 +228,7 @@ if ($q !== '') {
       if ($st === false) throw new RuntimeException("Prepare fallita: " . $db->lastErrorMsg());
       $st->bindValue(':q', $q, SQLITE3_TEXT);
       if ($has_feed) $st->bindValue(':fid', (int)$feed_id, SQLITE3_INTEGER);
+      if ($cat_val !== null) $st->bindValue(':cat', $cat_val, SQLITE3_TEXT);
       $st->bindValue(':limit', $limit, SQLITE3_INTEGER);
       $st->bindValue(':offset', $offset, SQLITE3_INTEGER);
       return $st->execute();
@@ -210,11 +249,12 @@ if ($q !== '') {
 }
 
 /** URL di una pagina dei risultati, preservando q / feed / limite. */
-function page_url(int $n, string $q, string $feed_id, int $limit): string {
+function page_url(int $n, string $q, string $feed_id, int $limit, string $cat = ''): string {
   return 'search.php?' . http_build_query(array_filter([
     'q'       => $q,
     'feed_id' => ($feed_id !== '' && ctype_digit($feed_id)) ? $feed_id : '',
     'limit'   => $limit,
+    'cat'     => $cat,
     'page'    => $n,
   ], static fn($v) => $v !== '' && $v !== null));
 }
@@ -255,7 +295,32 @@ function saved_url(array $s): string {
               <?php if ($s['feed_id'] !== null): ?> · feed #<?= (int)$s['feed_id'] ?><?php endif; ?>
               <?php if (!empty($s['result_limit'])): ?> · limite <?= (int)$s['result_limit'] ?><?php endif; ?>
             </span>
+            <?php if (!empty($s['watch'])): ?>
+              <div class="meta" style="margin-top:3px">
+                🔔 allerta attiva
+                <?php if (!empty($unseen[(int)$s['id']])): ?>
+                  · <a href="novita.php#s<?= (int)$s['id'] ?>"><b><?= (int)$unseen[(int)$s['id']] ?> nuove</b></a>
+                <?php endif; ?>
+                <?php if (!empty($s['last_checked_at'])): ?>
+                  · ultimo controllo <?=h(fmt_dt((string)$s['last_checked_at']))?>
+                <?php endif; ?>
+                <?php if (!empty($s['last_error'])): ?>
+                  <br><span style="color:var(--red-stamp)">⚠ la query non e' valida per l'indice: <?=h((string)$s['last_error'])?></span>
+                <?php endif; ?>
+              </div>
+            <?php endif; ?>
           </div>
+          <form method="post">
+            <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+            <input type="hidden" name="action" value="<?= !empty($s['watch']) ? 'watch_off' : 'watch_on' ?>">
+            <input type="hidden" name="id" value="<?= (int)$s['id'] ?>">
+            <input type="hidden" name="ret_q" value="<?=h($q)?>">
+            <input type="hidden" name="ret_feed" value="<?=h($feed_id)?>">
+            <input type="hidden" name="ret_limit" value="<?=$limit?>">
+            <button class="btn" type="submit" title="<?= !empty($s['watch']) ? 'Smetti di segnalare i nuovi articoli' : 'Segnala in «Novità» i nuovi articoli che corrispondono' ?>">
+              <?= !empty($s['watch']) ? '🔕 Spegni allerta' : '🔔 Allerta' ?>
+            </button>
+          </form>
           <form method="post" onsubmit="return confirm('Eliminare la ricerca «<?=h((string)$s['name'])?>»?')">
             <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
             <input type="hidden" name="action" value="delete">
@@ -288,6 +353,16 @@ function saved_url(array $s): string {
           </option>
         <?php endforeach; ?>
       </select>
+
+      <?php if (feeds_classified($db)): ?>
+      <select name="cat" title="Tipo di fonte">
+        <option value="">tutte le categorie</option>
+        <?php foreach (source_categories() as $k => [$lab, $desc]): ?>
+          <option value="<?=h($k)?>" title="<?=h($desc)?>" <?= $cat === $k ? 'selected' : '' ?>><?=h($lab)?></option>
+        <?php endforeach; ?>
+        <option value="__none" <?= $cat === '__none' ? 'selected' : '' ?>>non classificate</option>
+      </select>
+      <?php endif; ?>
 
       <select name="limit">
         <?php foreach ([25, 50, 100, 200] as $n): ?>
@@ -335,6 +410,9 @@ function saved_url(array $s): string {
           <input type="hidden" name="ret_feed" value="<?=h($feed_id)?>">
           <input type="hidden" name="ret_limit" value="<?=$limit?>">
           <input name="name" maxlength="80" placeholder="nome ricerca…" required>
+          <label class="meta" style="white-space:nowrap" title="Dopo ogni raccolta, i nuovi articoli che corrispondono compaiono in «Novità»">
+            <input type="checkbox" name="watch" value="1" checked> 🔔 avvisami dei nuovi
+          </label>
           <button class="btn" type="submit">Salva questa ricerca</button>
         </form>
       </div>
@@ -353,6 +431,7 @@ function saved_url(array $s): string {
                 <a href="item.php?id=<?=urlencode((string)$r['id'])?>"><b><?=h((string)$r['id'])?></b></a>
                 <?php if (!empty($r['feed_title'])): ?>
                   <span class="badge"><?=h((string)$r['feed_title'])?></span>
+                  <?= source_badge($r['src_category'] ?? null, $r['src_reliability'] ?? null) ?>
                 <?php endif; ?>
               </div>
 
@@ -382,14 +461,14 @@ function saved_url(array $s): string {
       <?php if ($pages > 1): ?>
         <div class="btns" style="justify-content:center; margin-top:16px">
           <?php if ($page > 1): ?>
-            <a class="btn" href="<?=h(page_url($page - 1, $q, $feed_id, $limit))?>">◀ Prec</a>
+            <a class="btn" href="<?=h(page_url($page - 1, $q, $feed_id, $limit, $cat))?>">◀ Prec</a>
           <?php endif; ?>
           <?php for ($p = max(1, $page - 2); $p <= min($pages, $page + 2); $p++): ?>
             <a class="btn <?= $p === $page ? 'active' : '' ?>"
-               href="<?=h(page_url($p, $q, $feed_id, $limit))?>"><?=$p?></a>
+               href="<?=h(page_url($p, $q, $feed_id, $limit, $cat))?>"><?=$p?></a>
           <?php endfor; ?>
           <?php if ($page < $pages): ?>
-            <a class="btn" href="<?=h(page_url($page + 1, $q, $feed_id, $limit))?>">Succ ▶</a>
+            <a class="btn" href="<?=h(page_url($page + 1, $q, $feed_id, $limit, $cat))?>">Succ ▶</a>
           <?php endif; ?>
         </div>
       <?php endif; ?>

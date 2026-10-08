@@ -8,6 +8,9 @@ $db = db_ro();
 
 // Parametri GET
 $feed_id = isset($_GET['feed']) && ctype_digit($_GET['feed']) ? (int)$_GET['feed'] : null;
+$cat = (string)($_GET['cat'] ?? '');
+[$cat_sql, $cat_val] = source_category_filter($cat, $db);
+if ($cat_sql === '') $cat = '';   // valore non valido o colonne assenti: nessun filtro
 $date_mode = $_GET['date'] ?? 'day'; // day, week, month
 if (!in_array($date_mode, ['day', 'week', 'month'], true)) $date_mode = 'day'; // whitelist: evita XSS riflesso negli href
 // `day` finisce in strtotime() e in new DateTime(): un valore non conforme
@@ -40,8 +43,9 @@ $end_utc   = (new DateTime($date_end   . ' 23:59:59', $tz_rome))->setTimezone($t
 // Costruzione query con paginazione
 // COALESCE: gli item senza published_at (feed che non lo espone) usano fetched_at,
 // altrimenti sparirebbero dalla vista cronologica.
-$where = "COALESCE(i.published_at, i.fetched_at) BETWEEN :start AND :end";
+$where = "COALESCE(i.published_at, i.fetched_at) BETWEEN :start AND :end" . $cat_sql;
 $params = [':start' => $start_utc, ':end' => $end_utc];
+if ($cat_val !== null) $params[':cat'] = $cat_val;
 if ($feed_id) {
     $where .= " AND i.feed_id = :feed";
     $params[':feed'] = $feed_id;
@@ -50,7 +54,7 @@ if ($feed_id) {
 // Conta totale
 $count_stmt = $db->prepare("
     SELECT COUNT(*) as cnt
-    FROM items i
+    FROM items i JOIN feeds f ON f.id = i.feed_id
     WHERE $where
 ");
 foreach ($params as $k => $v) $count_stmt->bindValue($k, $v, is_int($v) ? SQLITE3_INTEGER : SQLITE3_TEXT);
@@ -62,6 +66,7 @@ $offset = ($page - 1) * $per_page;
 $sql = "
     SELECT i.id, i.title, i.link, i.published_at, i.fetched_at,
            COALESCE(f.title, f.url) AS feed_title, f.url AS feed_url
+           " . source_select_cols($db) . "
     FROM items i
     JOIN feeds f ON f.id = i.feed_id
     WHERE $where
@@ -102,6 +107,16 @@ while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
         <?php endforeach; ?>
       </select>
 
+      <?php if (feeds_classified($db)): ?>
+      <select name="cat" title="Tipo di fonte">
+        <option value="">tutte le categorie</option>
+        <?php foreach (source_categories() as $k => [$lab, $desc]): ?>
+          <option value="<?=h($k)?>" title="<?=h($desc)?>" <?= $cat === $k ? 'selected' : '' ?>><?=h($lab)?></option>
+        <?php endforeach; ?>
+        <option value="__none" <?= $cat === '__none' ? 'selected' : '' ?>>non classificate</option>
+      </select>
+      <?php endif; ?>
+
       <select name="date">
         <option value="day" <?= $date_mode === 'day' ? 'selected' : '' ?>>Giorno</option>
         <option value="week" <?= $date_mode === 'week' ? 'selected' : '' ?>>Settimana</option>
@@ -126,7 +141,7 @@ while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
       <?php if ($pages > 1): ?>
         <div class="btns">
           <?php for ($p = max(1, $page-2); $p <= min($pages, $page+2); $p++): ?>
-            <a href="?feed=<?=$feed_id?>&date=<?=$date_mode?>&day=<?=urlencode($day)?>&page=<?=$p?>"
+            <a href="?feed=<?=$feed_id?>&cat=<?=urlencode($cat)?>&date=<?=$date_mode?>&day=<?=urlencode($day)?>&page=<?=$p?>"
                class="btn <?= $p == $page ? 'active' : '' ?>"><?=$p?></a>
           <?php endfor; ?>
         </div>
@@ -146,6 +161,7 @@ while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
             <div class="row">
               <a href="item.php?id=<?=urlencode((string)$item['id'])?>"><b><?=h((string)$item['id'])?></b></a>
               <span class="badge"><?=h($item['feed_title'])?></span>
+              <?= source_badge($item['src_category'], $item['src_reliability']) ?>
             </div>
 
             <?php if (!empty($item['title'])): ?>
@@ -169,11 +185,11 @@ while ($f = $resf->fetchArray(SQLITE3_ASSOC)) $feeds[] = $f;
     <?php if ($pages > 1): ?>
       <div class="btns" style="justify-content:center; margin-top:16px">
         <?php if ($page > 1): ?>
-          <a class="btn" href="?feed=<?=$feed_id?>&date=<?=$date_mode?>&day=<?=urlencode($day)?>&page=<?=$page-1?>">◀ Prec</a>
+          <a class="btn" href="?feed=<?=$feed_id?>&cat=<?=urlencode($cat)?>&date=<?=$date_mode?>&day=<?=urlencode($day)?>&page=<?=$page-1?>">◀ Prec</a>
         <?php endif; ?>
         <span class="meta">Pagina <?=$page?> di <?=$pages?></span>
         <?php if ($page < $pages): ?>
-          <a class="btn" href="?feed=<?=$feed_id?>&date=<?=$date_mode?>&day=<?=urlencode($day)?>&page=<?=$page+1?>">Succ ▶</a>
+          <a class="btn" href="?feed=<?=$feed_id?>&cat=<?=urlencode($cat)?>&date=<?=$date_mode?>&day=<?=urlencode($day)?>&page=<?=$page+1?>">Succ ▶</a>
         <?php endif; ?>
       </div>
     <?php endif; ?>

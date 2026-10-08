@@ -2,9 +2,9 @@
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
 
-// Gia' autenticato: vai alla ricerca.
+// Gia' autenticato: vai al bollettino, la pagina d'ingresso.
 if (auth_user() !== null) {
-  header('Location: search.php');
+  header('Location: bollettino.php');
   exit;
 }
 
@@ -13,7 +13,7 @@ function safe_next(string $n): string {
   if (preg_match('~([A-Za-z0-9_]+\.php(?:\?[^#\s]*)?)$~', trim($n), $m)) {
     return $m[1];
   }
-  return 'search.php';
+  return 'bollettino.php';   // destinazione predefinita dopo il login
 }
 
 $dbw = db_rw();

@@ -8,6 +8,17 @@ require_role('admin');
 $db = db_rw();
 $db->exec("PRAGMA journal_mode=WAL;");
 $db->exec("PRAGMA foreign_keys=ON;");
+feeds_classification_ensure($db);
+
+/** Valori di classificazione validi, oppure null. */
+function clean_category(?string $c): ?string {
+  $c = trim((string)$c);
+  return isset(source_categories()[$c]) ? $c : null;
+}
+function clean_reliability(?string $r): ?string {
+  $r = strtoupper(trim((string)$r));
+  return isset(source_reliability_scale()[$r]) ? $r : null;
+}
 
 function norm_url(string $u): string {
   $u = trim($u);
@@ -15,16 +26,21 @@ function norm_url(string $u): string {
   return $u;
 }
 
-function import_feed_row(SQLite3 $db, string $url, ?string $title, int $enabled = 1): bool {
+function import_feed_row(SQLite3 $db, string $url, ?string $title, int $enabled = 1,
+                         ?string $category = null, ?string $reliability = null): bool {
   $url = norm_url($url);
   if ($url === '' || !preg_match('~^https?://~i', $url)) {
     return false;
   }
 
   $stmt = $db->prepare("
-    INSERT OR IGNORE INTO feeds(url, title, enabled, created_at)
-    VALUES(:url, :title, :enabled, datetime('now'))
+    INSERT OR IGNORE INTO feeds(url, title, enabled, category, reliability, created_at)
+    VALUES(:url, :title, :enabled, :cat, :rel, datetime('now'))
   ");
+  $cat = clean_category($category);
+  $rel = clean_reliability($reliability);
+  $stmt->bindValue(':cat', $cat, $cat === null ? SQLITE3_NULL : SQLITE3_TEXT);
+  $stmt->bindValue(':rel', $rel, $rel === null ? SQLITE3_NULL : SQLITE3_TEXT);
   $stmt->bindValue(':url', $url, SQLITE3_TEXT);
 
   if ($title === null || trim($title) === '') {
@@ -44,7 +60,7 @@ $export = trim((string)($_GET['export'] ?? ''));
 if ($export === 'json' || $export === 'csv') {
   $rows = [];
   $res = $db->query("
-    SELECT id, url, title, enabled, created_at, updated_at
+    SELECT id, url, title, enabled, category, reliability, reliability_note, created_at, updated_at
     FROM feeds
     ORDER BY enabled DESC, COALESCE(title, url) ASC
   ");
@@ -81,7 +97,7 @@ if ($export === 'json' || $export === 'csv') {
 
   $out = fopen('php://output', 'w');
   fwrite($out, "\xEF\xBB\xBF");
-  fputcsv($out, ['id', 'url', 'title', 'enabled', 'created_at', 'updated_at']);
+  fputcsv($out, ['id', 'url', 'title', 'enabled', 'category', 'reliability', 'reliability_note', 'created_at', 'updated_at']);
 
   foreach ($rows as $r) {
     fputcsv($out, [
@@ -89,6 +105,9 @@ if ($export === 'json' || $export === 'csv') {
       $csv_safe((string)$r['url']),
       $csv_safe((string)($r['title'] ?? '')),
       (string)$r['enabled'],
+      (string)($r['category'] ?? ''),
+      (string)($r['reliability'] ?? ''),
+      $csv_safe((string)($r['reliability_note'] ?? '')),
       (string)($r['created_at'] ?? ''),
       (string)($r['updated_at'] ?? ''),
     ]);
@@ -123,6 +142,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $st->execute();
 
         $msg = 'Feed aggiunto (o già presente).';
+      }
+
+      elseif ($action === 'classify') {
+        $id = (int)($_POST['id'] ?? 0);
+        $cat = clean_category($_POST['category'] ?? null);
+        $rel = clean_reliability($_POST['reliability'] ?? null);
+        $note = trim((string)($_POST['reliability_note'] ?? ''));
+        if (mb_strlen($note, 'UTF-8') > 500) {
+          throw new RuntimeException('Nota troppo lunga (max 500 caratteri).');
+        }
+        $st = $db->prepare("UPDATE feeds SET category = :c, reliability = :r, reliability_note = :n,
+                                    updated_at = datetime('now') WHERE id = :id");
+        $st->bindValue(':c', $cat, $cat === null ? SQLITE3_NULL : SQLITE3_TEXT);
+        $st->bindValue(':r', $rel, $rel === null ? SQLITE3_NULL : SQLITE3_TEXT);
+        $st->bindValue(':n', $note === '' ? null : $note, $note === '' ? SQLITE3_NULL : SQLITE3_TEXT);
+        $st->bindValue(':id', $id, SQLITE3_INTEGER);
+        $st->execute();
+        if ($db->changes() === 0) throw new RuntimeException('feed non trovato');
+        $msg = 'Classificazione salvata.';
       }
 
       elseif ($action === 'toggle') {
@@ -194,7 +232,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $title = isset($row['title']) ? (string)$row['title'] : null;
             $enabled = isset($row['enabled']) ? (int)$row['enabled'] : 1;
 
-            if (import_feed_row($db, $url, $title, $enabled)) {
+            if (import_feed_row($db, $url, $title, $enabled,
+                                isset($row['category']) ? (string)$row['category'] : null,
+                                isset($row['reliability']) ? (string)$row['reliability'] : null)) {
               $inserted++;
             } else {
               $skipped++;
@@ -217,6 +257,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           $idxUrl = array_search('url', $headers, true);
           $idxTitle = array_search('title', $headers, true);
           $idxEnabled = array_search('enabled', $headers, true);
+          $idxCat = array_search('category', $headers, true);
+          $idxRel = array_search('reliability', $headers, true);
 
           if ($idxUrl === false) {
             throw new RuntimeException("CSV privo della colonna 'url'");
@@ -227,7 +269,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $title = ($idxTitle !== false) ? (string)($row[$idxTitle] ?? '') : null;
             $enabled = ($idxEnabled !== false) ? (int)($row[$idxEnabled] ?? 1) : 1;
 
-            if (import_feed_row($db, $url, $title, $enabled)) {
+            if (import_feed_row($db, $url, $title, $enabled,
+                                $idxCat !== false ? (string)($row[$idxCat] ?? '') : null,
+                                $idxRel !== false ? (string)($row[$idxRel] ?? '') : null)) {
               $inserted++;
             } else {
               $skipped++;
@@ -257,7 +301,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $rows = [];
 $res = $db->query("
   SELECT f.id, f.url, f.title, f.enabled, f.last_fetch_at, f.last_status, f.last_error,
-         f.created_at, f.updated_at,
+         f.created_at, f.updated_at, f.category, f.reliability, f.reliability_note,
          (SELECT COUNT(*) FROM items i WHERE i.feed_id = f.id) AS n_items
   FROM feeds f
   ORDER BY f.enabled DESC, COALESCE(f.title, f.url) ASC
@@ -265,6 +309,8 @@ $res = $db->query("
 while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
   $rows[] = $r;
 }
+$n_cat = count(array_filter($rows, static fn($x) => !empty($x['category'])));
+$n_rel = count(array_filter($rows, static fn($x) => !empty($x['reliability'])));
 ?>
 <!doctype html>
 <meta charset="utf-8">
@@ -327,6 +373,18 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
     <b><?=count($rows)?> feeds</b>
     <hr>
 
+    <?php if ($rows): ?>
+      <div class="meta" style="margin-bottom:8px">
+        Classificate: <b><?= $n_cat ?>/<?= count($rows) ?></b> ·
+        valutate: <b><?= $n_rel ?>/<?= count($rows) ?></b>.
+        L'affidabilità segue il <b>codice dell'Ammiragliato</b>: A completamente
+        affidabile · B generalmente · C abbastanza · D non sempre · E inaffidabile ·
+        F non valutabile. È un giudizio sulla <i>fonte</i>, non sul singolo articolo;
+        la motivazione resta accanto al grado perché fra sei mesi si possa ricostruire.
+      </div>
+      <hr>
+    <?php endif; ?>
+
     <?php if (!$rows): ?>
       <div class="meta">Nessun feed configurato.</div>
     <?php endif; ?>
@@ -339,6 +397,7 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
             <div class="row" style="margin-top:6px;">
               <span class="badge">#<?= (int)$r['id'] ?></span>
               <span class="badge"><?= number_format((int)$r['n_items'], 0, ',', '.') ?> articoli</span>
+              <?= source_badge($r['category'] ?? null, $r['reliability'] ?? null) ?>
               <?php if ((int)$r['enabled'] === 1): ?>
                 <span class="badge">abilitato</span>
               <?php else: ?>
@@ -387,6 +446,28 @@ while ($r = $res->fetchArray(SQLITE3_ASSOC)) {
             · errore: <?=h((string)$r['last_error'])?>
           <?php endif; ?>
         </div>
+
+        <form method="post" class="row" style="margin-top:8px; gap:6px; flex-wrap:wrap; align-items:center">
+          <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+          <input type="hidden" name="action" value="classify">
+          <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+          <select name="category" title="Tipo di testata">
+            <option value="">— categoria —</option>
+            <?php foreach (source_categories() as $k => [$lab, $desc]): ?>
+              <option value="<?=h($k)?>" title="<?=h($desc)?>" <?= ($r['category'] ?? '') === $k ? 'selected' : '' ?>><?=h($lab)?></option>
+            <?php endforeach; ?>
+          </select>
+          <select name="reliability" title="Affidabilità della fonte (codice dell'Ammiragliato)">
+            <option value="">— affidabilità —</option>
+            <?php foreach (source_reliability_scale() as $k => $lab): ?>
+              <option value="<?=h($k)?>" <?= ($r['reliability'] ?? '') === $k ? 'selected' : '' ?>><?=h($k . ' — ' . $lab)?></option>
+            <?php endforeach; ?>
+          </select>
+          <input class="grow" name="reliability_note" maxlength="500"
+                 value="<?=h((string)($r['reliability_note'] ?? ''))?>"
+                 placeholder="motivazione del grado (consigliata)">
+          <button class="btn" type="submit">Salva</button>
+        </form>
       </div>
       <hr>
     <?php endforeach; ?>

@@ -1,4 +1,5 @@
 <?php
 declare(strict_types=1);
-header("Location: search.php");
+// Pagina d'ingresso: il bollettino della giornata (prima era la Ricerca).
+header("Location: bollettino.php");
 exit;

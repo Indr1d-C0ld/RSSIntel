@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-10-08 (2) — Fase 1: bollettino, allerte, classificazione delle fonti
+
+Prima fase del piano nato dalla revisione dell'08/10: i dati d'uso mostravano una
+raccolta solida (~190 articoli al giorno) e una consultazione quasi nulla (un
+articolo aperto in cinque settimane). Direzione: e' la piattaforma a portare
+all'analista cio' che conta, invece di aspettare che lo cerchi.
+
+### Allerte sulle ricerche salvate
+- `fetcher/rssintel_watch.py` (nuovo): riesegue le ricerche salvate con allerta
+  attiva sui soli articoli indicizzati dopo l'ultimo controllo. Avviato da
+  `ExecStartPost` nella unit del fetcher, cosi' le corrispondenze compaiono
+  subito dopo ogni raccolta. Solo libreria standard. Riferimento d'avanzamento:
+  `items.fetched_at` (aggiornato anche quando un articolo viene reindicizzato),
+  con 10 minuti di sovrapposizione e UNIQUE contro i doppioni; letture fuori
+  transazione, scritture in transazioni brevi.
+- `webapp/novita.php` (nuovo): corrispondenze per ricerca, «visto» come comando
+  esplicito (passarci per sbaglio non fa perdere segnalazioni), storico di 7 giorni.
+- `webapp/search.php`: casella «avvisami dei nuovi» al salvataggio, pulsante per
+  accendere/spegnere l'allerta, stato, ultimo controllo, errori della query.
+  All'attivazione niente storico: un'allerta su «Iran» non porta migliaia di
+  vecchi articoli.
+- `webapp/nav.php`: voce «🔔 Novità» con il contatore delle non viste.
+- `webapp/lib.php`: `watch_ensure()` (idempotente, a differenza di ALTER TABLE),
+  `watch_unseen_by_search()`, `watch_unseen_count()`.
+- Misura: una prima versione della query sembrava impiegare 67 s; ripetuta a
+  cache calda impiega 27-35 ms, e l'alternativa "ottimizzata" era piu' lenta.
+  Tenuta la query semplice. Collaudo: 45 corrispondenze per «Iran», identiche a
+  una query indipendente; seconda esecuzione 0 doppioni; query FTS non valida
+  registrata senza fermare le altre; isolamento fra utenti verificato.
+
+### Classificazione delle fonti
+- `webapp/feeds.php`: per ogni feed categoria (tipo di testata, non orientamento),
+  affidabilita' secondo il **codice dell'Ammiragliato** (A-F) e nota di
+  motivazione; riepilogo e legenda; import/export con la classificazione.
+  Solo la lettera: la cifra 1-6 valuta la singola informazione, non la fonte.
+- `webapp/lib.php`: `source_categories()`, `source_reliability_scale()`,
+  `source_badge()`, `source_category_filter()`, `source_select_cols()` (le
+  pagine funzionano anche prima della migrazione, solo senza distintivi),
+  `feeds_classification_ensure()`.
+- `webapp/browse.php`, `search.php`, `item.php`, `novita.php`: distintivo
+  «B · specialistica», filtro per categoria (anche «non classificate») conservato
+  dalla paginazione; in `item.php` anche la motivazione del grado.
+- Collaudo: conteggi per categoria identici alle query indipendenti
+  (165 + 1.569 = 1.734 su «drone»); valori non validi scartati.
+
+### Bollettino
+- `webapp/bollettino.php` (nuovo), **pagina d'ingresso** (`index.php` e login):
+  la giornata ordinata per tipo di fonte, con le specialistiche in testa e il
+  flusso generalista compresso in fondo; allerte della giornata; salute dei feed.
+- Salute dei feed: il silenzio si giudica sul ritmo della singola fonte (stimato
+  sui 23 giorni PRIMA della settimana in esame) e si segnala quando una settimana
+  vuota avrebbe avuto meno del 5% di probabilita'. La regola ovvia ("zero articoli
+  in 7 giorni") sui dati reali dava 6 falsi allarmi, tutti su blog a bassa
+  frequenza; questa ne da' uno, ed e' un feed vero fermo dal 29/09 dietro
+  risposte `304` senza errori.
+
+### Schema e distribuzione
+- `schema.sql`: colonne di allerta su `saved_searches`, tabella `watch_hits`,
+  colonne di classificazione su `feeds`.
+- `deploy/migrations/` (nuovo): SQL per aggiornare un DB esistente, con README.
+- `deploy/rssintel-fetch.service.sample`: `ExecStartPost` per le allerte.
+- `README.md`: componenti e schema aggiornati (erano fermi a prima di utenti, temi,
+  catture; l'indice FTS era ancora descritto come contenuto esterno), sezione su
+  bollettino, allerte e fonti.
+
 ## 2026-10-08 — Catture visive
 
 - **Catture visive degli articoli** (in produzione dal 16/09/2026, qui versionate).

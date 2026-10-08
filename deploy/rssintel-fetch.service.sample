@@ -13,4 +13,9 @@ Environment=RSSINTEL_TXT_DIR=/var/lib/rssintel/text
 Environment=RSSINTEL_RAW_DIR=/var/lib/rssintel/raw
 Environment=RSSINTEL_UA=RSSIntel/1.1 (+https://example.com; research)
 ExecStart=/opt/rssintel-venv/bin/python /opt/rssintel/rssintel_fetch.py
+# Allerte sulle ricerche salvate: subito dopo ogni giro, rssintel_watch.py
+# riesegue le ricerche con allerta attiva sui soli articoli nuovi (legge il DB
+# da RSSINTEL_DB). Il "-" iniziale: un errore delle allerte non deve segnare
+# come fallita una raccolta andata a buon fine.
+ExecStartPost=-/opt/rssintel-venv/bin/python /opt/rssintel/rssintel_watch.py
 WorkingDirectory=/opt/rssintel

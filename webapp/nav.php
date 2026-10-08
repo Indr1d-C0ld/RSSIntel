@@ -10,7 +10,18 @@ declare(strict_types=1);
 function render_header(string $title, string $active = ''): void {
   $u = auth_user();
 
+  // Contatore delle corrispondenze non viste delle allerte. Se qualcosa va
+  // storto (tabella assente, DB occupato) la navigazione deve comparire lo
+  // stesso: il contatore e' un'informazione in piu', non una dipendenza.
+  $novita = 0;
+  if ($u) {
+    try { $novita = watch_unseen_count(db_ro(), (string)$u['username']); }
+    catch (Throwable $e) { $novita = 0; }
+  }
+
   $links = [
+    'bollettino'=> ['bollettino.php','🗞 Bollettino'],
+    'novita'    => ['novita.php',    '🔔 Novità' . ($novita > 0 ? ' (' . $novita . ')' : '')],
     'browse'    => ['browse.php',    '📰 Lettura'],
     'search'    => ['search.php',    'Ricerca'],
     'favorites' => ['favorites.php', '★ Favoriti'],

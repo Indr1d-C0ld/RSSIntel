@@ -487,6 +487,152 @@ function resolve_ip_geo(SQLite3 $dbw, string $ip): array {
   }
 }
 
+/* =====================  Classificazione delle fonti  ===================== */
+
+/**
+ * Categorie di fonte: descrivono il TIPO di testata, non il suo orientamento.
+ * Etichette come "alternativa" o "mainstream" sarebbero gia' un giudizio.
+ * chiave => [etichetta breve, descrizione]. Aggiungerne una = una riga qui.
+ */
+function source_categories(): array {
+  return [
+    'generalista'   => ['generalista',   'Testata o agenzia a copertura generale'],
+    'specialistica' => ['specialistica', 'Settoriale: difesa, aviazione, intelligence, energia...'],
+    'istituzionale' => ['istituzionale', 'Organismo ufficiale: ONU, governi, forze armate'],
+    'analisi'       => ['analisi',       'Rivista, think tank, analisi e commento'],
+    'blog'          => ['blog',          'Blog o newsletter individuale'],
+    'advocacy'      => ['advocacy',      'Associazione o testata con una causa dichiarata'],
+  ];
+}
+
+/**
+ * Affidabilita' della FONTE secondo il codice dell'Ammiragliato (NATO).
+ * Il codice completo ha anche una cifra 1-6 per la credibilita' della singola
+ * informazione: quella appartiene all'articolo, non al feed, e non sta qui.
+ * NULL nel DB = non ancora valutata; F = valutata, ma senza basi per giudicare.
+ */
+function source_reliability_scale(): array {
+  return [
+    'A' => 'Completamente affidabile',
+    'B' => 'Generalmente affidabile',
+    'C' => 'Abbastanza affidabile',
+    'D' => 'Non sempre affidabile',
+    'E' => 'Inaffidabile',
+    'F' => 'Affidabilita\' non valutabile',
+  ];
+}
+
+/** Colonne di classificazione su feeds, se mancano. Idempotente. */
+function feeds_classification_ensure(SQLite3 $dbw): void {
+  $cols = [];
+  $r = $dbw->query("PRAGMA table_info(feeds)");
+  while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $cols[(string)$x['name']] = true;
+  if (!$cols) return;
+  if (!isset($cols['category']))         $dbw->exec("ALTER TABLE feeds ADD COLUMN category TEXT");
+  if (!isset($cols['reliability']))      $dbw->exec("ALTER TABLE feeds ADD COLUMN reliability TEXT");
+  if (!isset($cols['reliability_note'])) $dbw->exec("ALTER TABLE feeds ADD COLUMN reliability_note TEXT");
+}
+
+/** true se la tabella feeds ha gia' le colonne di classificazione. */
+function feeds_classified(SQLite3 $db): bool {
+  return (bool)$db->querySingle("SELECT 1 FROM pragma_table_info('feeds') WHERE name='category'");
+}
+
+/**
+ * Distintivo "B · specialistica" accanto al nome della fonte. Vuoto se la
+ * fonte non e' ne' classificata ne' valutata. Il tooltip spiega la lettera,
+ * che da sola non dice molto a chi non conosce il codice.
+ */
+function source_badge(?string $category, ?string $reliability): string {
+  $cats  = source_categories();
+  $scale = source_reliability_scale();
+  $rel = strtoupper((string)$reliability);
+  $cat = (string)$category;
+  $parts = []; $tip = [];
+  if (isset($scale[$rel])) { $parts[] = $rel; $tip[] = 'Affidabilità ' . $rel . ' — ' . $scale[$rel]; }
+  if (isset($cats[$cat]))  { $parts[] = $cats[$cat][0]; $tip[] = $cats[$cat][1]; }
+  if (!$parts) return '';
+  return '<span class="badge" title="' . h(implode(' · ', $tip)) . '">' . h(implode(' · ', $parts)) . '</span>';
+}
+
+/**
+ * Colonne di classificazione da aggiungere a una SELECT che ha `feeds f`.
+ * Se la migrazione non e' ancora stata fatta restituisce NULL al loro posto:
+ * le pagine continuano a funzionare, solo senza distintivi.
+ */
+function source_select_cols(SQLite3 $db): string {
+  return feeds_classified($db)
+    ? ', f.category AS src_category, f.reliability AS src_reliability'
+    : ', NULL AS src_category, NULL AS src_reliability';
+}
+
+/**
+ * Filtro per categoria nelle query: '' = tutte, '__none' = non classificate,
+ * altrimenti una chiave valida. Ritorna [frammento SQL, valore da legare o null].
+ * Il frammento presuppone l'alias f per feeds.
+ */
+function source_category_filter(string $cat, ?SQLite3 $db = null): array {
+  if ($cat === '') return ['', null];
+  if ($db !== null && !feeds_classified($db)) return ['', null];
+  if ($cat === '__none') return [' AND f.category IS NULL ', null];
+  if (isset(source_categories()[$cat])) return [' AND f.category = :cat ', $cat];
+  return ['', null];
+}
+
+/* =====================  Allerte sulle ricerche salvate  ===================== */
+
+/**
+ * Aggiunge le colonne delle allerte a saved_searches e crea watch_hits, se
+ * mancano. Idempotente (a differenza di ALTER TABLE ADD COLUMN da solo, che
+ * fallisce alla seconda esecuzione): controlla prima cosa c'e' gia'.
+ * Le corrispondenze le produce rssintel_watch.py dopo ogni giro del fetcher.
+ */
+function watch_ensure(SQLite3 $dbw): void {
+  $cols = [];
+  $r = $dbw->query("PRAGMA table_info(saved_searches)");
+  while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $cols[(string)$x['name']] = true;
+  if (!$cols) return; // saved_searches non esiste ancora: la crea search.php
+  if (!isset($cols['watch']))           $dbw->exec("ALTER TABLE saved_searches ADD COLUMN watch INTEGER NOT NULL DEFAULT 0");
+  if (!isset($cols['last_checked_at'])) $dbw->exec("ALTER TABLE saved_searches ADD COLUMN last_checked_at TEXT");
+  if (!isset($cols['last_error']))      $dbw->exec("ALTER TABLE saved_searches ADD COLUMN last_error TEXT");
+  $dbw->exec("
+    CREATE TABLE IF NOT EXISTS watch_hits (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      search_id INTEGER NOT NULL REFERENCES saved_searches(id) ON DELETE CASCADE,
+      item_id   INTEGER NOT NULL REFERENCES items(id)          ON DELETE CASCADE,
+      found_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      seen      INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(search_id, item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_watch_hits_unseen ON watch_hits(search_id, seen);
+  ");
+}
+
+function watch_table_exists(SQLite3 $db): bool {
+  return (bool)$db->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='watch_hits'");
+}
+
+/** Corrispondenze non ancora viste, per ricerca, dell'utente indicato: search_id => n. */
+function watch_unseen_by_search(SQLite3 $db, string $owner): array {
+  $out = [];
+  if ($owner === '' || !watch_table_exists($db)) return $out;
+  $st = $db->prepare("
+    SELECT w.search_id, COUNT(*) n
+    FROM watch_hits w JOIN saved_searches s ON s.id = w.search_id
+    WHERE s.owner = :o AND w.seen = 0
+    GROUP BY w.search_id
+  ");
+  $st->bindValue(':o', $owner, SQLITE3_TEXT);
+  $r = $st->execute();
+  while ($x = $r->fetchArray(SQLITE3_ASSOC)) $out[(int)$x['search_id']] = (int)$x['n'];
+  return $out;
+}
+
+/** Totale delle corrispondenze non viste (per il contatore nella navigazione). */
+function watch_unseen_count(SQLite3 $db, string $owner): int {
+  return array_sum(watch_unseen_by_search($db, $owner));
+}
+
 /* =====================  Catture visive  ===================== */
 
 /**
