@@ -64,8 +64,8 @@ def watch_row(name):
 
 sugg = os.path.join(work, "sentinelle.txt")
 open(sugg, "w", encoding="utf-8").write(
-    "# prova\nIran e Hormuz | Iran OR Hormuz | riepilogo\nGaza | Gaza | riepilogo\n"
-    'Valle del Sacco | "valle del Sacco" OR Anagni | istantanea\nriga sbagliata\n')
+    "# prova\nMar Rosso e Houthi | Houthi OR \"Mar Rosso\" | riepilogo\nTaiwan | Taiwan | riepilogo\n"
+    'Sudan | Sudan OR Darfur | istantanea\nriga sbagliata\n')
 
 print("== avvio e proposte")
 _, out = cli("codice", admin)
@@ -91,17 +91,17 @@ check("anteprima con stima e modalita' della proposta",
       (p or {}).get("text", "")[:300])
 tok = cbs(p, "w:")[0].split(":")[1]
 p = click(f"w:{tok}:ok")
-w = watch_row("Iran e Hormuz")
+w = watch_row("Mar Rosso e Houthi")
 check("«Crea»: sentinella attiva", p and "attiva" in p["text"] and w and w["watch"] == 1 and w["last_checked_at"])
-check("stessa forma del portale: query, modalita', nessuna scadenza", w and w["q"] == "Iran OR Hormuz"
+check("stessa forma del portale: query, modalita', nessuna scadenza", w and w["q"] == 'Houthi OR "Mar Rosso"'
       and w["mode"] == "digest" and w["expires_at"] is None, w)
 n0 = len(calls()); push(cbq(ME, f"w:{tok}:ok")); time.sleep(1.5)
 check("secondo «Crea» sullo stesso messaggio: nessun doppione",
       q("SELECT COUNT(*) FROM saved_searches WHERE owner = ?", admin)[0][0] == 1)
 
 print("== /segui")
-p = send("/segui flydubai")
-est = core.estimate("flydubai")
+p = send("/segui Groenlandia")
+est = core.estimate("Groenlandia")
 m = re.search(r"<b>([\d,]+) articoli al giorno", (p or {}).get("text", ""))
 check("stima uguale alla query del worker", m and abs(float(m.group(1).replace(",", ".")) - est["per_day"]) < 0.051,
       (m and m.group(1), est["per_day"]))
@@ -113,7 +113,7 @@ check("cambio modalita'", p and "Modalità: <b>📅 Riepilogo" in p["text"])
 p = click(f"w:{tok}:e:7")
 check("cambio scadenza", p and "scadenza: <b>7 giorni" in p["text"])
 p = click(f"w:{tok}:ok")
-w = watch_row("flydubai")
+w = watch_row("Groenlandia")
 check("creata con modalita' e scadenza scelte", w and w["mode"] == "digest" and w["expires_at"]
       and q("SELECT julianday(?) - julianday('now')", w["expires_at"])[0][0] > 6.9, w)
 p = send("/segui l'iran")
@@ -135,7 +135,7 @@ check("creata dalla ricerca", watch_row("Tel Aviv") is not None)
 
 print("== /allerte")
 p = send("/allerte")
-check("elenco delle sentinelle", p and "Iran e Hormuz" in p["text"] and "flydubai" in p["text"] and "Tel Aviv" in p["text"])
+check("elenco delle sentinelle", p and "Mar Rosso e Houthi" in p["text"] and "Groenlandia" in p["text"] and "Tel Aviv" in p["text"])
 sid = watch_row("Tel Aviv")["id"]
 p = click(f"a:{sid}")
 check("dettaglio", p and "Query:" in p["text"] and cbs(p, f"am:{sid}:"))
@@ -173,14 +173,14 @@ check("sentinella creata dal web: Riepilogo per impostazione predefinita",
       p and re.search(r"dal portale</b> — 📅 Riepilogo", p["text"]))
 
 print("== /novita")
-mine = watch_row("flydubai")["id"]
+mine = watch_row("Groenlandia")["id"]
 its = [r[0] for r in q("SELECT id FROM items ORDER BY id DESC LIMIT 5")]
 for iid in its[:3]:
     q("INSERT OR IGNORE INTO watch_hits(search_id, item_id) VALUES (?, ?)", mine, iid)
 for iid in its[:2]:
     q("INSERT OR IGNORE INTO watch_hits(search_id, item_id) VALUES (?, ?)", osid, iid)
 p = send("/novita")
-check("segnalazioni raggruppate, solo le proprie", p and "3 segnalazioni" in p["text"] and "flydubai" in p["text"]
+check("segnalazioni raggruppate, solo le proprie", p and "3 segnalazioni" in p["text"] and "Groenlandia" in p["text"]
       and "ZZ-sentinella-altrui" not in p["text"], (p or {}).get("text", "")[:200])
 check("bottoni scheda e «Viste»", cbs(p, "i:") and cbs(p, f"nv:{mine}") and cbs(p, "nva"))
 n0 = len(calls())
@@ -197,10 +197,10 @@ check("«Segna tutto»: tutte le proprie, non quelle altrui",
       and q("SELECT COUNT(*) FROM watch_hits WHERE search_id = ? AND seen = 0", osid)[0][0] == 2)
 q("UPDATE watch_hits SET seen = 0 WHERE search_id = ?", mine)   # «visto» sul web e nel bot: la stessa colonna
 p = send("/novita")
-check("cio' che torna non visto (dal web) ricompare nel bot", p and "flydubai" in p["text"])
+check("cio' che torna non visto (dal web) ricompare nel bot", p and "Groenlandia" in p["text"])
 
 print("== scadenze")
-fly = watch_row("flydubai")["id"]
+fly = watch_row("Groenlandia")["id"]
 q("UPDATE tg_watch_prefs SET expires_at = datetime('now', '+12 hours'), reminded_at = NULL WHERE search_id = ?", fly)
 n0 = len(calls()); time.sleep(6)
 rem = [p for m, p in calls()[n0:] if m == "sendMessage" and "scade il" in (p.get("text") or "")]
@@ -211,32 +211,32 @@ check("prolungata a 7 giorni da adesso", q("SELECT julianday(expires_at) - julia
 q("UPDATE tg_watch_prefs SET expires_at = datetime('now', '-1 minute') WHERE search_id = ?", fly)
 n0 = len(calls()); time.sleep(6)
 exp = [p for m, p in calls()[n0:] if m == "sendMessage" and "è scaduta" in (p.get("text") or "")]
-w = watch_row("flydubai")
+w = watch_row("Groenlandia")
 check("alla scadenza: spenta e avvisata, una volta sola", len(exp) == 1 and w["watch"] == 0 and w["expires_at"] is None,
       (len(exp), w))
 q("UPDATE saved_searches SET watch = 1 WHERE id = ?", fly)        # = riaccesa dal portale
 n0 = len(calls()); time.sleep(7)
 check("riaccesa dal web: resta accesa dopo 3 controlli, nessun altro avviso",
-      watch_row("flydubai")["watch"] == 1 and not [p for m, p in calls()[n0:] if "scadut" in str(p.get("text"))])
+      watch_row("Groenlandia")["watch"] == 1 and not [p for m, p in calls()[n0:] if "scadut" in str(p.get("text"))])
 
 print("== casi della revisione")
-q("INSERT INTO saved_searches(owner, name, q, feed_id, watch) VALUES (?, 'Hormuz', 'Hormuz OR Ormuz', 3, 0)", admin)
-p = send("/segui Hormuz")
+q("INSERT INTO saved_searches(owner, name, q, feed_id, watch) VALUES (?, 'Taiwan', 'Taiwan OR Formosa', 3, 0)", admin)
+p = send("/segui Taiwan")
 check("nome gia' usato da una ricerca diversa: proposto un nome libero",
-      p and "Hormuz (2)" in p["text"], (p or {}).get("text", "")[:120])
+      p and "Taiwan (2)" in p["text"], (p or {}).get("text", "")[:120])
 click(f"w:{cbs(p, 'w:')[0].split(':')[1]}:ok")
-r0 = q("SELECT q, feed_id FROM saved_searches WHERE owner = ? AND name = 'Hormuz'", admin)
-check("la ricerca salvata esistente resta intatta", r0 == [("Hormuz OR Ormuz", 3)], r0)
-check("la nuova ha il suo nome", watch_row("Hormuz (2)") is not None)
-fly = watch_row("flydubai")["id"]
+r0 = q("SELECT q, feed_id FROM saved_searches WHERE owner = ? AND name = 'Taiwan'", admin)
+check("la ricerca salvata esistente resta intatta", r0 == [("Taiwan OR Formosa", 3)], r0)
+check("la nuova ha il suo nome", watch_row("Taiwan (2)") is not None)
+fly = watch_row("Groenlandia")["id"]
 click(f"aw:{fly}:0")
 q("UPDATE tg_watch_prefs SET expires_at = datetime('now', '-1 minute') WHERE search_id = ?", fly)
 n0 = len(calls()); time.sleep(6)
 check("scadenza di una sentinella gia' spenta: nessun avviso, scadenza azzerata",
       not [p for m, p in calls()[n0:] if "scadut" in str(p.get("text"))]
-      and watch_row("flydubai")["expires_at"] is None)
+      and watch_row("Groenlandia")["expires_at"] is None)
 click(f"ae:{fly}:7"); click(f"ae:{fly}:7")
-w = watch_row("flydubai")
+w = watch_row("Groenlandia")
 d = q("SELECT julianday(?) - julianday('now')", w["expires_at"])[0][0]
 check("«Prolunga» su una spenta la riaccende; due tocchi non sommano", w["watch"] == 1 and 6.9 < d < 7.1, (w["watch"], d))
 q("UPDATE tg_watch_prefs SET paused_until = datetime('now', '-1 hour') WHERE search_id = ?", fly)
@@ -266,7 +266,7 @@ except subprocess.TimeoutExpired:
     bot.kill(); rc = "timeout"
 check("arresto pulito", rc == 0, rc)
 logf.seek(0); log = logf.read()
-check("nel log nessuna query ne' nome di sentinella", all(x not in log for x in ("flydubai", "Hormuz", "Tel Aviv", "Iran e")))
+check("nel log nessuna query ne' nome di sentinella", all(x not in log for x in ("Groenlandia", "Houthi", "Tel Aviv", "Mar Rosso")))
 check("nel log niente errori non gestiti", "errore non gestito" not in log and "Traceback" not in log
       and "non riuscito" not in log, log[-800:])
 

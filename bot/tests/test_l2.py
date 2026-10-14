@@ -110,13 +110,13 @@ r, _ = roundtrip(msg(OTHER, f"/start {code_b}"), OTHER)
 check("secondo account collegato (per le prove di gettoni altrui)", "Collegato" in r, r)
 
 print("== ricerca")
-p, _ = search_msg("flydubai")
-ref = core.search("flydubai")
+p, _ = search_msg("Groenlandia")
+ref = core.search("Groenlandia")
 check("testo libero = ricerca, totale come il core", p and f"{ref['total']} risultati" in p["text"], (p or {}).get("text", "")[:200])
 check("6 risultati per pagina con i bottoni scheda", p and sum(1 for b in buttons(p) if b.get("callback_data", "").startswith("i:")) == 6)
 check("primi 6 id come il core", p and [b["callback_data"][2:] for b in buttons(p) if b.get("callback_data", "").startswith("i:")]
       == [str(x["id"]) for x in ref["rows"]])
-check("estratti con l'evidenziazione in <b>", p and "<b>flydubai</b>" in p["text"].lower())
+check("estratti con l'evidenziazione in <b>", p and "<b>groenlandia</b>" in p["text"].lower())
 check("nessuna anteprima dei link", p and (p.get("link_preview_options") or {}).get("is_disabled") is True)
 tok = tok_of(p)
 pe, _ = click(f"s:{tok}:2")
@@ -174,7 +174,7 @@ pe, n0 = click(f"sc:{tk}:9")
 check("indice di categoria fuori scala ignorato", pe is None)
 
 print("== scheda")
-first = core.search("flydubai")["rows"][0]["id"]
+first = core.search("Groenlandia")["rows"][0]["id"]
 p, _ = click(f"i:{first}", method="sendMessage")
 bt = buttons(p)
 check("scheda: estratto espandibile", p and "<blockquote expandable>" in p["text"])
@@ -251,7 +251,7 @@ except subprocess.TimeoutExpired:
     bot.kill(); rc = "timeout"
 check("arresto pulito", rc == 0, rc)
 logf.seek(0); log = logf.read()
-check("nel log nessuna query (flydubai, l'iran, Tel Aviv)", all(s not in log.lower() for s in ("flydubai", "l'iran", "tel aviv")))
+check("nel log nessuna query (Groenlandia, l'iran, Tel Aviv)", all(s not in log.lower() for s in ("groenlandia", "l'iran", "tel aviv")))
 check("nel log niente errori non gestiti", "errore non gestito" not in log and "Traceback" not in log, log[-800:])
 
 q("DELETE FROM items WHERE id = ?", fx_item); q("DELETE FROM feeds WHERE id = ?", fx_feed)

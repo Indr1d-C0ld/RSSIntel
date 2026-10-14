@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-15 (3) — Esempi neutri nel bot e nei test
+
+- `bot/rssintel_bot.py` (testo di `/aiuto` e di `/segui`) e `bot/tests/test_l2.py`, `test_l3.py`:
+  gli esempi erano presi da ricerche reali; ora sono termini neutri presenti
+  nell'archivio. Nessun cambio di comportamento.
+
 ## 2026-10-15 (2) — Bot Telegram, lotto L3: sentinelle e Novita'
 
 - `bot/rssintel_core.py` — sentinelle. Una sentinella e' una ricerca salvata

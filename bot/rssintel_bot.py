@@ -313,7 +313,7 @@ def run_bot() -> int:
                     "<b>Cercare</b>: scrivi una o più parole, oppure <code>/cerca parole</code>.\n"
                     "Risultati dal più recente, 6 per pagina; tocca 📄 per la scheda dell'articolo.\n"
                     "Sintassi come sul portale: <code>Iran OR Israele</code>, "
-                    "<code>\"valle del Sacco\"</code>, <code>Hezbollah*</code>, <code>title:gaza</code>. "
+                    "<code>\"Mar Rosso\"</code>, <code>Hezbollah*</code>, <code>title:gaza</code>. "
                     "Se una ricerca non è valida la reinterpreto e te lo dico.\n\n"
                     "<b>Sentinelle</b>: <code>/segui parole</code> crea un'allerta sui nuovi articoli "
                     "(prima ti dico quanti ne avrebbe trovati negli ultimi 14 giorni); "
@@ -664,7 +664,7 @@ def run_bot() -> int:
         q = clean_query(" ".join(context.args or []))
         if not q:
             await reply(update, "Scrivi <code>/segui</code> seguito dalle parole da sorvegliare, "
-                                "per esempio <code>/segui flydubai</code>. Oppure, da una ricerca, tocca 🔔 Segui.")
+                                "per esempio <code>/segui Groenlandia</code>. Oppure, da una ricerca, tocca 🔔 Segui.")
             await show_suggestions(update, "Oppure scegli una di queste:")
             return
         await start_pending(update, link, q)
