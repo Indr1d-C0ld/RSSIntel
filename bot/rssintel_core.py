@@ -341,7 +341,8 @@ def fmt_dt(s: str | None) -> str:
         d = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     except ValueError:
         return s
-    return d.astimezone(TZ).strftime("%d/%m %H:%M")
+    loc = d.astimezone(TZ)
+    return loc.strftime("%d/%m %H:%M" if loc.year == datetime.now(TZ).year else "%d/%m/%Y %H:%M")
 
 
 def status() -> dict:
@@ -365,3 +366,272 @@ def count_usage(cmd: str) -> None:
     with state() as s:
         s.execute("INSERT INTO usage(day, cmd, n) VALUES (?, ?, 1) "
                   "ON CONFLICT(day, cmd) DO UPDATE SET n = n + 1", (day, cmd))
+
+
+# ===================================================== ricerca e lettura (L2)
+#
+# Stessa query di search.php: la stringa dell'utente va a MATCH cosi' com'e',
+# risultati per data (non per pertinenza), stesso snippet(), stesso filtro per
+# categoria. In piu' il bot e' tollerante: se FTS rifiuta la query (tipico da
+# telefono: «l'Iran», «Al-Aqsa», «Iran?»), la riprova con le parole tra
+# virgolette e dice come l'ha interpretata. La forma che ha funzionato e' quella
+# da salvare in una sentinella, cosi' web, bot e worker eseguono la stessa.
+
+import gzip
+import html as _html
+import re as _re
+import time as _time
+from urllib.parse import urlsplit
+
+PER_PAGE = 6
+# Oltre questo tempo la query e' troppo larga e si interrompe. A cache calda una
+# ricerca comune («Iran», 7.000 risultati) richiede ~10 ms; a cache fredda e con il
+# disco sotto pressione arriva a 2-3 s: il limite non deve colpire quelle.
+SEARCH_BUDGET_S = float(os.environ.get("RSSINTEL_BOT_SEARCH_BUDGET_S", "8"))
+TEXT_MAX = 2_000_000            # caratteri letti al massimo da un testo
+FTS_OPERATORS = {"AND", "OR", "NOT"}
+
+CATEGORIES = {   # come source_categories() in lib.php
+    "generalista": "generalista", "specialistica": "specialistica",
+    "istituzionale": "istituzionale", "analisi": "analisi",
+    "blog": "blog", "advocacy": "advocacy",
+}
+CATEGORY_KEYS = ["", *CATEGORIES, "__none"]      # indice -> chiave (callback_data compatti)
+RELIABILITY = {"A", "B", "C", "D", "E", "F"}
+
+TEXT_DIR = os.environ.get("RSSINTEL_TXT_DIR") or os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "text")
+
+
+class SearchError(Exception):
+    """Query che FTS non accetta in nessuna forma."""
+
+
+class SearchTooBroad(Exception):
+    """Query interrotta perche' oltre il tempo concesso."""
+
+
+def _quote(tok: str) -> str:
+    return '"' + tok.replace('"', '""') + '"'
+
+
+def fts_forms(q: str) -> list[str]:
+    """La query come l'ha scritta, poi due ripieghi sempre piu' letterali."""
+    toks = q.split()
+    semi = " ".join(t if t in FTS_OPERATORS else _quote(t) for t in toks)
+    full = " ".join(_quote(t) for t in toks)
+    out = []
+    for f in (q, semi, full):
+        if f and f not in out:
+            out.append(f)
+    return out
+
+
+def _fts_rejects(e: sqlite3.Error) -> bool:
+    """Errore dovuto alla query (sintassi FTS5 in tutte le sue forme) e non al sistema.
+
+    Elencare le frasi di FTS5 non basta: ne restavano fuori alcune
+    («expected integer», «parser stack overflow»). Si escludono invece gli
+    errori di sistema, che non vanno mascherati da query sbagliata.
+    """
+    m = str(e).lower()
+    return not any(s in m for s in ("interrupted", "locked", "busy", "disk i/o", "unable to open",
+                                    "readonly", "corrupt", "no such table"))
+
+
+def category_filter(cat: str) -> tuple[str, tuple]:
+    if cat == "__none":
+        return " AND f.category IS NULL ", ()
+    if cat in CATEGORIES:
+        return " AND f.category = ? ", (cat,)
+    return "", ()
+
+
+def snippet_html(snip: str | None) -> str:
+    """Prima l'escape, poi i marcatori: l'ordine che usa search.php."""
+    s = _html.escape(" ".join((snip or "").split()), quote=False)   # niente a capo dentro l'estratto
+    return s.replace("\x02", "<b>").replace("\x03", "</b>")
+
+
+def clean_title(t: str | None) -> str:
+    """Testo semplice: alcuni feed mandano i titoli con le entita' gia' scritte (&amp;)."""
+    return _html.unescape(t or "").strip()
+
+
+def search(q: str, cat: str = "", page: int = 1, per_page: int = PER_PAGE) -> dict:
+    q = q.strip()
+    cat_sql, cat_args = category_filter(cat)
+    deadline = _time.monotonic() + SEARCH_BUDGET_S
+    with db() as con:
+        con.set_progress_handler(lambda: _time.monotonic() > deadline, 10_000)
+        try:
+            last = None
+            for form in fts_forms(q):
+                try:
+                    total = con.execute(
+                        "SELECT COUNT(*) FROM items_fts JOIN items i ON i.id = items_fts.rowid "
+                        "JOIN feeds f ON f.id = i.feed_id WHERE items_fts MATCH ?" + cat_sql,
+                        (form, *cat_args)).fetchall()[0][0]
+                except sqlite3.OperationalError as e:
+                    if "interrupted" in str(e):
+                        raise SearchTooBroad() from None
+                    if _fts_rejects(e):
+                        last = e
+                        continue
+                    raise
+                pages = (total + per_page - 1) // per_page
+                page = max(1, min(page, pages or 1))       # come il web: oltre la fine -> ultima
+                try:
+                    # Stessa query di search.php ma SENZA snippet(): con ORDER BY ... LIMIT
+                    # SQLite lo calcolerebbe per tutte le corrispondenze prima di ordinare
+                    # (37.000 per «a*»: 5 s a cache calda, 16 s a freddo). Gli estratti si
+                    # calcolano dopo, solo per le righe della pagina: risultati e ordine identici.
+                    rows = con.execute(
+                        "SELECT i.id, i.title, i.link, i.published_at, i.fetched_at, "
+                        "COALESCE(f.title, f.url), f.category, f.reliability "
+                        "FROM items_fts JOIN items i ON i.id = items_fts.rowid "
+                        "JOIN feeds f ON f.id = i.feed_id WHERE items_fts MATCH ?" + cat_sql +
+                        " ORDER BY COALESCE(i.published_at, i.fetched_at) DESC LIMIT ? OFFSET ?",
+                        (form, *cat_args, per_page, (page - 1) * per_page)).fetchall()
+                    snips = {}
+                    if rows:
+                        ids = [r[0] for r in rows]
+                        snips = dict(con.execute(
+                            "SELECT rowid, snippet(items_fts, 1, char(2), char(3), '…', 24) FROM items_fts "
+                            "WHERE items_fts MATCH ? AND rowid IN (" + ",".join("?" * len(ids)) + ")",
+                            (form, *ids)).fetchall())
+                except sqlite3.OperationalError as e:
+                    if "interrupted" in str(e):
+                        raise SearchTooBroad() from None
+                    raise
+                rows = [(*r, snips.get(r[0])) for r in rows]
+                keys = ("id", "title", "link", "published_at", "fetched_at", "feed",
+                        "category", "reliability", "snippet")
+                return {"q": q, "effective": form, "reinterpreted": form != q, "cat": cat,
+                        "total": total, "pages": pages, "page": page,
+                        "rows": [dict(zip(keys, r)) for r in rows]}
+            raise SearchError(str(last) if last else "query vuota")
+        finally:
+            con.set_progress_handler(None, 0)
+
+
+def badge(category: str | None, reliability: str | None) -> str:
+    """Come source_badge() in lib.php, in testo: «B · specialistica»."""
+    parts = []
+    rel = (reliability or "").upper()
+    if rel in RELIABILITY:
+        parts.append(rel)
+    if category in CATEGORIES:
+        parts.append(CATEGORIES[category])
+    return " · ".join(parts)
+
+
+def safe_url(u: str | None) -> str:
+    """Come safe_url() in lib.php ma SENZA escape HTML: http(s), niente caratteri
+    di controllo. L'escape si fa solo dove serve (mai sui bottoni URL)."""
+    u = (u or "").strip()
+    if not _re.match(r"(?i)^https?://", u) or _re.search(r"[\x00-\x1f\x7f]", u):
+        return ""
+    return u
+
+
+def host(u: str) -> str:
+    try:
+        h = (urlsplit(u).hostname or "").lower()
+    except ValueError:
+        return ""
+    return h[4:] if h.startswith("www.") else h
+
+
+def utf16_len(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+def read_text(path: str | None) -> str:
+    """Testo dell'articolo, solo dentro la cartella dei testi (.txt o .txt.gz)."""
+    if not path:
+        return ""
+    try:
+        real = os.path.realpath(path)
+        base = os.path.realpath(TEXT_DIR)
+        if (os.path.commonpath([real, base]) != base or not os.path.isfile(real)
+                or not real.endswith((".txt", ".txt.gz"))):
+            return ""
+        if real.endswith(".gz"):
+            with gzip.open(real, "rb") as f:
+                raw = f.read(TEXT_MAX * 4)
+        else:
+            with open(real, "rb") as f:
+                raw = f.read(TEXT_MAX * 4)
+    except Exception:               # anche zlib.error di un .gz danneggiato: niente testo, non un crash
+        return ""
+    return raw.decode("utf-8", "replace")[:TEXT_MAX].strip()
+
+
+def get_item(item_id: int) -> dict | None:
+    with db() as con:
+        r = con.execute(
+            "SELECT i.id, i.title, i.link, i.published_at, i.fetched_at, i.text_path, "
+            "COALESCE(f.title, f.url), f.category, f.reliability "
+            "FROM items i JOIN feeds f ON f.id = i.feed_id WHERE i.id = ?", (item_id,)).fetchall()
+    if not r:
+        return None
+    keys = ("id", "title", "link", "published_at", "fetched_at", "text_path", "feed", "category", "reliability")
+    return dict(zip(keys, r[0]))
+
+
+def split_text(text: str, size: int = 3500) -> list[str]:
+    """Pezzi da al massimo `size` caratteri, tagliati ai capoversi quando si puo'."""
+    out, cur = [], ""
+    for para in _re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para:
+            continue
+        while len(para) > size:                 # capoverso enorme: si taglia a una frase o a uno spazio
+            cut = max(para.rfind(". ", 0, size), para.rfind(" ", 0, size))
+            cut = cut + 1 if cut > size // 2 else size
+            if cur:
+                out.append(cur); cur = ""
+            out.append(para[:cut].strip()); para = para[cut:].strip()
+        if len(cur) + len(para) + 2 > size and cur:
+            out.append(cur); cur = ""
+        cur = f"{cur}\n\n{para}" if cur else para
+    if cur:
+        out.append(cur)
+    return out
+
+
+# ---------------------------------------- contesti di paginazione (state.db)
+# I bottoni portano solo un gettone corto: la query vera resta qui, legata al
+# collegamento che l'ha creata e valida 48 ore. Un bottone falsificato o
+# vecchio non puo' far eseguire una query arbitraria.
+
+CTX_TTL_S = 48 * 3600
+CTX_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+CTX_SCHEMA = ("CREATE TABLE IF NOT EXISTS ctx (tok TEXT PRIMARY KEY, link_id INTEGER, "
+              "q TEXT, orig TEXT, cat TEXT, created REAL)")
+
+
+def ctx_new(link_id: int, q: str, orig: str, cat: str = "") -> str:
+    """q = forma eseguita (quella che ha funzionato), orig = come l'ha scritta l'utente."""
+    tok = "".join(secrets.choice(CTX_ALPHABET) for _ in range(8))
+    now = _time.time()
+    with state() as s:
+        s.execute(CTX_SCHEMA)
+        s.execute("DELETE FROM ctx WHERE created < ?", (now - CTX_TTL_S,))
+        s.execute("INSERT INTO ctx VALUES (?, ?, ?, ?, ?, ?)", (tok, link_id, q, orig, cat, now))
+    return tok
+
+
+def ctx_get(tok: str, link_id: int) -> dict | None:
+    with state() as s:
+        s.execute(CTX_SCHEMA)
+        r = s.execute("SELECT q, orig, cat FROM ctx WHERE tok = ? AND link_id = ? AND created >= ?",
+                      (tok, link_id, _time.time() - CTX_TTL_S)).fetchall()
+    return {"q": r[0][0], "orig": r[0][1], "cat": r[0][2] or ""} if r else None
+
+
+def ctx_set_cat(tok: str, link_id: int, cat: str) -> None:
+    with state() as s:
+        s.execute("UPDATE ctx SET cat = ? WHERE tok = ? AND link_id = ?", (cat, tok, link_id))

@@ -137,9 +137,24 @@ Requisiti: `chromium` e Pillow nel Python che esegue il worker.
 `bot/rssintel_bot.py` porta RSSIntel sul telefono senza passare dal portale:
 un servizio Python separato (`python-telegram-bot` 22.8, long polling, nessuna
 porta in ingresso) che legge e scrive lo stesso database. Lo si costruisce a
-lotti: questa versione (L1) collega l'account e risponde a `/stato`, `/aiuto`,
-`/esci`; ricerca, schede degli articoli, allerte con notifiche e bollettino
-arrivano nei lotti successivi.
+lotti; questa versione (L2) collega l'account, cerca e fa leggere. Allerte con
+notifiche e bollettino arrivano nei lotti successivi.
+
+- **Ricerca.** Si scrive una parola, oppure `/cerca`.
+  - I risultati sono **gli stessi di `search.php`**: stessa query FTS, stesso
+    ordine per data, stesso filtro per categoria. Lo verifica un confronto con
+    il portale.
+  - 6 risultati per pagina, con fonte, grado, data, dominio ed estratto
+    evidenziato.
+  - Se FTS rifiuta la query (`l'Iran`, `Al-Aqsa`, `iran-israel`), il bot la
+    riprova con le parole tra virgolette e dice come l'ha interpretata.
+  - Gli estratti si calcolano solo per la pagina mostrata, e una query troppo
+    larga si interrompe dopo 8 secondi.
+- **Lettura.** Ogni risultato apre una scheda: estratto, «Apri fonte», «Link»
+  da copiare e il testo completo, in messaggi da circa 3.500 caratteri oppure
+  come file `.txt` se è lungo.
+- **Bottoni.** Portano solo un gettone corto: la query vera resta nel database
+  di stato del bot, legata all'account e valida 48 ore.
 
 - **Segreti.** Token e ID Telegram autorizzati arrivano come credenziali
   `systemd` (`LoadCredentialEncrypted=`, `LoadCredential=`), mai da variabili

@@ -1,5 +1,65 @@
 # Changelog
 
+## 2026-10-15 — Bot Telegram, lotto L2: ricerca e lettura
+
+Dal telefono si cerca nell'archivio e si leggono gli articoli, senza passare dal
+portale.
+
+- `bot/rssintel_core.py` — ricerca e lettura:
+  - `search()` esegue la query di `search.php` (MATCH sulla stringa
+    dell'utente, ordine per data, stesso filtro per categoria). Confrontata
+    con il portale vero su una copia del DB: 11 casi su 11 con stessi totali
+    e stessi 50 id in ordine, tra cui pagina 40, `OR`, prefissi, `title:` e
+    categorie.
+  - Se FTS rifiuta la query la riprova con le parole tra virgolette, e alla
+    fine con tutto tra virgolette. Qualunque errore di MATCH che non sia di
+    sistema vale come query rifiutata.
+  - Gli estratti (`snippet()`) si calcolano in una seconda query, solo per le
+    righe della pagina. Con ORDER BY ... LIMIT SQLite li calcolava per tutte
+    le corrispondenze: per `a*` 5 s a cache calda e 16 s a freddo, contro
+    0,75 s ora.
+  - Limite di tempo di 8 s, configurabile. A cache fredda e con il disco
+    sotto pressione anche «Iran» arrivava a 2-3 s: un limite di 2 s
+    l'avrebbe respinta.
+  - `read_text()` legge solo `.txt`/`.txt.gz` dentro la cartella dei testi,
+    con un tetto di dimensione. Un file danneggiato da' testo vuoto, non un
+    crash.
+  - `safe_url()` restituisce l'URL senza escape HTML, perche' i bottoni lo
+    vogliono intatto (21% dei link contiene `&`).
+- `bot/rssintel_bot.py` (versione L2):
+  - testo libero e `/cerca`; 6 risultati per pagina con fonte, grado, data,
+    dominio ed estratto;
+  - pagine ◀ ▶ modificando lo stesso messaggio;
+  - filtro 🗂 per categoria;
+  - scheda con estratto espandibile, «Apri fonte», «Link» (solo sotto i 256
+    caratteri, limite di Telegram) e «Testo completo»: pezzi da circa 3.500
+    caratteri in testo semplice, oppure un file `.txt` oltre 4 pezzi;
+  - «sta scrivendo...» durante la ricerca;
+  - i bottoni portano un gettone di 8 caratteri legato all'account (48 ore);
+    un gettone falsificato o di un altro account riceve «ricerca scaduta»;
+  - a capo e caratteri di controllo tolti dalla query;
+  - comando sconosciuto: risposta invece del silenzio;
+  - fino a 4 aggiornamenti in parallelo, cosi' una ricerca lenta non blocca il
+    bot;
+  - oltre il limite di richieste i bottoni rispondono con un avviso;
+  - il log degli errori riporta solo tipo e posizione, mai il messaggio, che
+    puo' contenere parte della query.
+- `bot/tests/`: `harness.py` (strumenti comuni) e `test_l2.py`, 51 controlli
+  contro il finto server Telegram. Coprono:
+  - query ostili e su piu' righe;
+  - gettoni scaduti, falsificati o di altri account;
+  - pagina oltre la fine;
+  - categoria;
+  - link con `&` e oltre 256 caratteri;
+  - titolo e fonte con HTML ostile;
+  - testo medio a pezzi e testo lungo come file;
+  - limiti di 4096 caratteri;
+  - nessuna query nel log.
+
+  `test_l1.py` resta a 41 su 41, con ID di prova lunghi come quelli veri: 111
+  e 999 si confondevano con i tempi nel log.
+- `README.md`: sezione «Bot Telegram» aggiornata.
+
 ## 2026-10-14 — Bot Telegram, primo lotto: identita' e accesso
 
 Primo lotto del bot Telegram, che porta RSSIntel sul telefono senza passare dal

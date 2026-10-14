@@ -20,7 +20,7 @@ import fake_tg  # noqa: E402
 DB = os.path.abspath(sys.argv[1])
 # costruito a pezzi: nel sorgente non deve comparire nulla con la forma di un token
 TOKEN = "123456:" + "TESTtest" * 5
-ME, OTHER, STRANGER = 111, 222, 999
+ME, OTHER, STRANGER = 7700000111, 7700000222, 7700000999   # lunghi come quelli veri: non si confondono con i tempi nei log
 OK = KO = 0
 
 
@@ -90,7 +90,7 @@ def cbq(uid, data):
                                                          "text": "x"}}}
 
 
-def roundtrip(upd, chat_id, wait=3.0):
+def roundtrip(upd, chat_id, wait=15.0):
     n0 = len(calls())
     push(upd)
     t = time.time()
@@ -154,9 +154,9 @@ r, _ = roundtrip(msg(ME, "/stato"), ME)
 check("/stato risponde con raccolta e permessi (admin)", "Stato di RSSIntel" in r and "Permessi del database" in r, r)
 check("/stato riporta la sandbox", "Sandbox: ok" in r, r)
 r, _ = roundtrip(msg(ME, "/aiuto"), ME)
-check("/aiuto", "comandi disponibili" in r, r)
+check("/aiuto", "Cercare" in r and "/stato" in r, r)
 r, _ = roundtrip(msg(ME, "iran"), ME)
-check("testo libero: avviso che la ricerca arriva", "ricerca" in r, r)
+check("testo libero: e' una ricerca (dettagli in test_l2)", "risultati" in r, r)
 
 print("== bottoni")
 n0 = len(calls()); push(cbq(STRANGER, "esci:si")); time.sleep(1.5)
@@ -214,8 +214,8 @@ except subprocess.TimeoutExpired:
 check("SIGTERM: esce pulito", rc == 0, rc)
 logf.seek(0); log = logf.read()
 check("log senza token", TOKEN not in log and "TESTtest" not in log)
-check("log senza codici ne' ID", all(c not in log for c in (code, code2, code3, code4))
-      and str(ME) not in log and str(STRANGER) not in log)
+_bad = [c for c in (code, code2, code3, code4, str(ME), str(STRANGER)) if c in log]
+check("log senza codici ne' ID", not _bad, [l for l in log.splitlines() if any(b in l for b in _bad)][:5])
 check("log con nomi dei comandi e tempi", "stato " in log and " ms" in log)
 
 print("== token revocato a bot avviato")

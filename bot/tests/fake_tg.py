@@ -44,6 +44,24 @@ def make_handler(st: State):
             ct = self.headers.get("Content-Type", "")
             if "json" in ct:
                 return json.loads(raw or b"{}")
+            if "multipart/form-data" in ct:          # sendDocument: campi testuali + file
+                import email.parser, email.policy
+                msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+                    b"Content-Type: " + ct.encode() + b"\r\n\r\n" + raw)
+                out = {}
+                for part in msg.iter_parts():
+                    name = part.get_param("name", header="content-disposition")
+                    fn = part.get_filename()
+                    data = part.get_payload(decode=True) or b""
+                    if fn:
+                        out[name] = {"filename": fn, "size": len(data), "head": data[:200].decode("utf-8", "replace")}
+                    else:
+                        v = data.decode("utf-8", "replace")
+                        try:
+                            out[name] = json.loads(v)
+                        except ValueError:
+                            out[name] = v
+                return out
             out = {}
             for k, v in urllib.parse.parse_qsl(raw.decode()):
                 try:
@@ -93,7 +111,7 @@ def make_handler(st: State):
                             break
                         st.lock.wait(0.1)
                 return self._send(200, {"ok": True, "result": res})
-            if method in ("sendMessage", "editMessageText"):
+            if method in ("sendMessage", "editMessageText", "sendDocument", "editMessageReplyMarkup"):
                 with st.lock:
                     st.msg_id += 1
                     mid = p.get("message_id") or st.msg_id
