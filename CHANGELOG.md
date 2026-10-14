@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-10-15 (5) — Bot Telegram, lotto L5: bollettino
+
+- `bot/rssintel_core.py` — bollettino. Stesse regole di `bollettino.php`:
+  - giorno di calendario italiano (`day_bounds_utc` uguale a `lib.php` anche
+    nei giorni del cambio d'ora);
+  - sezioni per tipo di fonte nello stesso ordine e con gli stessi limiti
+    (12 per generalista e non classificate, 40 per le altre);
+  - allerte del giorno dell'utente;
+  - salute dei feed (errore, non aggiornato da 2 ore, silenzio di Poisson
+    rispetto ai 23 giorni precedenti), nello stesso ordine della pagina.
+
+  Confronto con il portale vero sulla copia del DB: 5 giorni su 5 con stessi
+  totali, fonti, conteggi per sezione e problemi.
+- Avvisi sulla salute delle fonti, solo agli amministratori e solo ai cambi di
+  stato:
+  - il cambio deve ripetersi in due controlli di fila, cosi' una fonte che va e
+    viene non manda un avviso a ogni giro;
+  - lo stato si salva solo dopo la consegna, cosi' un invio fallito non fa
+    perdere l'avviso;
+  - il rientro si segnala per tipo di problema, in silenzio;
+  - quasi tutte le fonti ferme insieme danno un solo «la raccolta potrebbe
+    essere ferma»;
+  - i messaggi lunghi si spezzano invece di essere tagliati.
+- `bot/rssintel_bot.py` (versione L5):
+  - `/oggi`, `/oggi ieri`, `/oggi gg/mm[/aaaa]`. Le date impossibili o future
+    sono rifiutate; una data senza anno molto avanti e' dell'anno scorso;
+  - riepilogo con allerte e fonti;
+  - bottoni per sezione e per giorno; sezioni a 10 articoli per pagina con 📄;
+  - «📬 Ricevilo ogni mattina»: il bollettino di ieri, silenzioso, dalle 8 a
+    mezzogiorno, una volta al giorno, anche se il bot ripartiva dopo le 8.
+- `bot/tests/test_l5.py`: 30 controlli:
+  - giorni e date ostili;
+  - sezioni e limiti del web;
+  - bottoni falsificati;
+  - invio del mattino una volta sola, e spento;
+  - avviso in errore e in rientro;
+  - raccolta ferma.
+
 ## 2026-10-15 (4) — Bot Telegram, lotto L4: notifiche
 
 - `bot/rssintel_core.py` — notifiche.

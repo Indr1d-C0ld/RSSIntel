@@ -46,13 +46,13 @@ import threading
 import time
 import traceback
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rssintel_core as core  # noqa: E402
 
-VERSION = "L4"
+VERSION = "L5"
 EXIT_CONFIG = 78                    # EX_CONFIG: la unit non riavvia
 TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{30,}")
 RATE_PER_MIN = int(os.environ.get("RSSINTEL_BOT_RATE_PER_MIN", "30"))   # comandi e bottoni al minuto
@@ -205,6 +205,7 @@ def run_bot() -> int:
         BotCommand("segui", "crea una sentinella sui nuovi articoli"),
         BotCommand("allerte", "le tue sentinelle"),
         BotCommand("novita", "segnalazioni non ancora viste"),
+        BotCommand("oggi", "bollettino del giorno (anche /oggi ieri, /oggi 13/10)"),
         BotCommand("aiuto", "cosa sa fare il bot"),
         BotCommand("stato", "stato della raccolta e del bot"),
         BotCommand("esci", "scollega questo account"),
@@ -329,7 +330,9 @@ def run_bot() -> int:
                     "<b>Notifiche</b>: ⚡ istantanee dopo ogni giro di raccolta (al massimo un suono all'ora, "
                     "le altre silenziose), 📅 riepiloghi alle 8, alle 13 e alle 19, niente invii dalle 2 alle 8. "
                     "Da /allerte, per ogni sentinella, «solo conteggi» se non vuoi titoli in chat.\n\n"
-                    "<i>In arrivo: il bollettino del giorno.</i>")
+                    "<b>Bollettino</b>: /oggi (o <code>/oggi ieri</code>, <code>/oggi 13/10</code>) — la giornata per "
+                    "tipo di fonte, come nel portale, con allerte e salute delle fonti. Dal bollettino puoi "
+                    "chiedere di riceverlo ogni mattina alle 8.")
 
     @guarded("stato")
     async def cmd_stato(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
@@ -1068,6 +1071,272 @@ def run_bot() -> int:
             except BadRequest:
                 pass
 
+    # ------------------------------------------------------- bollettino (L5)
+
+    RE_B = re.compile(r"^b:(\d{8})(?::([0-6]):(\d{1,2}))?$")
+    RE_BP = re.compile(r"^bp:([01]):(\d{8})$")
+    SECTION_PAGE = 10
+    BULLETIN_AT = core._hhmm(os.environ.get("RSSINTEL_BOT_BULLETIN_AT", "08:00"))
+    BULLETIN_UNTIL = int(os.environ.get("RSSINTEL_BOT_BULLETIN_UNTIL", "12"))   # dopo, il bollettino di ieri non parte piu'
+
+    def parse_day(args: list[str]) -> str | None:
+        t = datetime.now(core.TZ)
+        if not args:
+            return t.strftime("%Y-%m-%d")
+        a = args[0].lower()
+        if a in ("ieri", "yesterday"):
+            return (t - timedelta(days=1)).strftime("%Y-%m-%d")
+        m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{4}|\d{2}))?", a)
+        if not m:
+            return None
+        y = int(m.group(3)) if m.group(3) else t.year
+        y = y + 2000 if y < 100 else y
+        if y < 2000:
+            return None
+        try:
+            d = datetime(y, int(m.group(2)), int(m.group(1)))
+            # senza anno, una data molto avanti e' dell'anno scorso («13/12» a gennaio);
+            # una data di pochi giorni avanti resta futura e viene rifiutata
+            if not m.group(3) and (d.date() - t.date()).days > 7:
+                d = d.replace(year=y - 1)
+        except ValueError:                           # 31/02, 29/02 in un anno non bisestile
+            return None
+        return d.strftime("%Y-%m-%d")
+
+    def ymd(day: str) -> str:
+        return day.replace("-", "")
+
+    def from_ymd(x: str) -> str:
+        return f"{x[:4]}-{x[4:6]}-{x[6:]}"
+
+    def render_summary(b: dict, push_on: bool) -> tuple[str, InlineKeyboardMarkup]:
+        day, today = b["day"], core.today_local()
+        lines = [f"📰 <b>Bollettino di {core.day_label(day)}</b>" + (" · <i>oggi, in corso</i>" if day == today else "")]
+        lines.append(f"{b['n_items']:,} articoli da {b['n_sources']} fonti".replace(",", ".")
+                     + f" · ultima raccolta {core.fmt_dt(b['last_fetch'])}")
+        if not b["n_watches"]:
+            lines.append("🔔 Nessuna sentinella attiva: /segui per crearne una.")
+        elif not b["alerts"]:
+            lines.append(f"🔔 Nessuna corrispondenza in questa giornata ({b['n_watches']} sentinelle attive).")
+        else:
+            lines.append("🔔 " + " · ".join(f"{esc(x['name'])} {x['n']}" + (f" ({x['unseen']} da vedere)" if x["unseen"] else "")
+                                           for x in b["alerts"][:8]))
+        if not b["problems"]:
+            lines.append(f"🩺 Fonti: tutte regolari ({b['n_feeds']} attive).")
+        else:
+            lines.append(f"🩺 ⚠️ {len(b['problems'])} font{'e' if len(b['problems']) == 1 else 'i'} da controllare:")
+            for p in b["problems"][:6]:
+                lines.append(f"• {esc(p['name'])} — {esc(' · '.join(p['why']))}")
+        if not b["n_items"]:
+            lines.append("\nNessun articolo in questa giornata.")
+        rows, sec = [], []
+        for s_ in b["sections"]:
+            idx = core.BULLETIN_ORDER.index(s_["key"])
+            sec.append(InlineKeyboardButton(f"{s_['label'].capitalize()} {len(s_['rows'])}", callback_data=f"b:{ymd(day)}:{idx}:1"))
+        rows += [sec[i:i + 2] for i in range(0, len(sec), 2)]
+        d = datetime.strptime(day, "%Y-%m-%d")
+        prev, nxt = (d - timedelta(days=1)).strftime("%Y-%m-%d"), (d + timedelta(days=1)).strftime("%Y-%m-%d")
+        nav = [InlineKeyboardButton(f"◀ {prev[8:]}/{prev[5:7]}", callback_data=f"b:{ymd(prev)}")]
+        if day != today:
+            nav.append(InlineKeyboardButton("Oggi", callback_data=f"b:{ymd(today)}"))
+            if nxt <= today:
+                nav.append(InlineKeyboardButton(f"{nxt[8:]}/{nxt[5:7]} ▶", callback_data=f"b:{ymd(nxt)}"))
+        rows.append(nav)
+        at = f"{BULLETIN_AT[0]}" + (f":{BULLETIN_AT[1]:02d}" if BULLETIN_AT[1] else "")
+        rows.append([InlineKeyboardButton(f"📬 Ogni mattina alle {at}: attivo ✓ (tocca per spegnere)" if push_on
+                                          else f"📬 Ricevilo ogni mattina alle {at}", callback_data=f"bp:{0 if push_on else 1}:{ymd(day)}")])
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3990].rsplit("\n", 1)[0] + "\n…"
+        return text, InlineKeyboardMarkup(rows)
+
+    def render_section(b: dict, idx: int, page: int) -> tuple[str, InlineKeyboardMarkup]:
+        key = core.BULLETIN_ORDER[idx]
+        day = b["day"]
+        sec = next((x for x in b["sections"] if x["key"] == key), None)
+        back = [InlineKeyboardButton("« Bollettino", callback_data=f"b:{ymd(day)}")]
+        if not sec:
+            return f"Nessun articolo «{esc(core.section_label(key))}» in questa giornata.", InlineKeyboardMarkup([back])
+        shown = sec["rows"][:sec["cap"]]
+        pages = max(1, (len(shown) + SECTION_PAGE - 1) // SECTION_PAGE)
+        page = max(1, min(page, pages))
+        part = shown[(page - 1) * SECTION_PAGE:page * SECTION_PAGE]
+        lines = [f"📰 <b>{esc(sec['label'].capitalize())}</b> — {len(sec['rows'])} articoli · {core.day_label(day)}"
+                 + (f" · pag. {page}/{pages}" if pages > 1 else "")]
+        first = (page - 1) * SECTION_PAGE + 1
+        for k, x in enumerate(part, first):
+            meta = [esc(x["feed"] or "")]
+            bd = core.badge(x["category"], x["reliability"])
+            if bd:
+                meta.append(bd)
+            meta.append(core.fmt_dt(x["published_at"] or x["fetched_at"])[-5:])
+            title = core.clean_title(x["title"]) or "(senza titolo)"
+            title = title if len(title) <= 300 else title[:299] + "…"
+            lines.append(f"<b>{k}.</b> {esc(title)} <i>· {' · '.join(meta)}</i>")
+        extra = len(sec["rows"]) - len(shown)
+        if extra > 0 and page == pages:
+            lines.append(f"<i>… e altri {extra} nel portale (Lettura, categoria «{esc(sec['label'])}»).</i>")
+        btn = [InlineKeyboardButton(f"📄{k}", callback_data=f"i:{x['id']}") for k, x in enumerate(part, first)]
+        rows = [btn[i:i + 5] for i in range(0, len(btn), 5)]
+        if pages > 1:
+            nav = []
+            if page > 1:
+                nav.append(InlineKeyboardButton("◀", callback_data=f"b:{ymd(day)}:{idx}:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page}/{pages}", callback_data="-"))
+            if page < pages:
+                nav.append(InlineKeyboardButton("▶", callback_data=f"b:{ymd(day)}:{idx}:{page + 1}"))
+            rows.append(nav)
+        rows.append(back)
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3990].rsplit("\n", 1)[0] + "\n…"
+        return text, InlineKeyboardMarkup(rows)
+
+    async def push_on_for(link_id: int) -> bool:
+        return bool(await asyncio.to_thread(core.kv_get, f"bulletin_push:{link_id}", False))
+
+    async def edit_or_send(update: Update, text: str, kb) -> None:
+        if update.callback_query:
+            try:
+                await update.callback_query.edit_message_text(text, reply_markup=kb)
+            except BadRequest as e:
+                if "not modified" not in str(e).lower():
+                    raise
+        else:
+            await update.effective_chat.send_message(text, reply_markup=kb)
+
+    @guarded("oggi")
+    async def cmd_oggi(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        day = parse_day(context.args or [])
+        if not day:
+            await reply(update, "Data non valida. Esempi: <code>/oggi</code>, <code>/oggi ieri</code>, <code>/oggi 13/10</code>.")
+            return
+        if day > core.today_local():
+            await reply(update, "Quel giorno non è ancora arrivato.")
+            return
+        try:
+            await update.effective_chat.send_action(ChatAction.TYPING)
+        except TelegramError:
+            pass
+        b = await asyncio.to_thread(core.bulletin, day, link["username"])
+        text, kb = render_summary(b, await push_on_for(link["link_id"]))
+        await edit_or_send(update, text, kb)
+
+    @guarded("bollettino")
+    async def cb_b(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        m = RE_B.match(update.callback_query.data)
+        try:
+            day = from_ymd(m.group(1)); datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            return
+        if day > core.today_local():
+            return
+        b = await asyncio.to_thread(core.bulletin, day, link["username"])
+        if m.group(2) is None:
+            text, kb = render_summary(b, await push_on_for(link["link_id"]))
+        else:
+            text, kb = render_section(b, int(m.group(2)), int(m.group(3)))
+        await edit_or_send(update, text, kb)
+
+    @guarded("bollettino_mattina")
+    async def cb_bp(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        m = RE_BP.match(update.callback_query.data)
+        on = m.group(1) == "1"
+        await asyncio.to_thread(core.kv_set, f"bulletin_push:{link['link_id']}", on)
+        t = datetime.now(core.TZ)
+        if on and (t.hour, t.minute) >= BULLETIN_AT:   # attivato dopo le 8: il primo arriva domani, non subito
+            await asyncio.to_thread(core.kv_set, f"bulletin_sent:{link['link_id']}", core.today_local())
+        try:
+            await update.callback_query.answer("Ogni mattina ti mando il bollettino di ieri" if on
+                                               else "Invio del mattino spento")
+        except TelegramError:
+            pass
+        try:
+            day = from_ymd(m.group(2)); datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            day = core.today_local()
+        b = await asyncio.to_thread(core.bulletin, min(day, core.today_local()), link["username"])
+        text, kb = render_summary(b, on)
+        await edit_or_send(update, text, kb)
+
+    async def morning_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Il bollettino di ieri, silenzioso, dalle 8 a mezzogiorno: se il bot era spento alle 8
+        lo recupera appena riparte; dopo mezzogiorno lascia perdere. Una volta al giorno."""
+        try:
+            t = datetime.now(core.TZ)
+            if (t.hour, t.minute) < BULLETIN_AT or t.hour >= BULLETIN_UNTIL:
+                return
+            today = t.strftime("%Y-%m-%d")
+            yesterday = (t - timedelta(days=1)).strftime("%Y-%m-%d")
+            for l in await asyncio.to_thread(core.active_links):
+                if not await push_on_for(l["id"]):
+                    continue
+                if await asyncio.to_thread(core.kv_get, f"bulletin_sent:{l['id']}") == today:
+                    continue
+                me = await asyncio.to_thread(core.resolve_link, l["chat_id"])
+                if not me or me["disabled"] or me["blocked"] or me["link_id"] != l["id"]:
+                    continue
+                b = await asyncio.to_thread(core.bulletin, yesterday, l["username"])
+                text, kb = render_summary(b, True)
+                try:
+                    await context.bot.send_message(l["chat_id"], text, reply_markup=kb, disable_notification=True)
+                except Forbidden:
+                    await asyncio.to_thread(core.set_blocked, l["chat_id"], True)
+                    continue
+                except TelegramError as e:
+                    log.warning("bollettino del mattino non consegnato: %s", type(e).__name__)
+                    continue                         # riprova al giro dopo, fino a mezzogiorno
+                await asyncio.to_thread(core.kv_set, f"bulletin_sent:{l['id']}", today)
+                log.info("bollettino del mattino inviato")
+        except Exception as e:
+            log.warning("bollettino del mattino non riuscito: %s", type(e).__name__)
+
+    async def health_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Salute delle fonti agli amministratori, solo quando cambia: una fonte che si ferma o
+        va in errore, e quando torna regolare."""
+        try:
+            new, back, state = await asyncio.to_thread(core.health_changes)
+            if state is None:
+                return
+            if not new and not back:
+                await asyncio.to_thread(core.health_commit, state)
+                return
+            lines = ["🩺 <b>Salute delle fonti</b>"]
+            stale = [p for p in new if p.get("new_kinds") == ["stale"]]
+            _, n_feeds = await asyncio.to_thread(core.feed_health)
+            if n_feeds and len(stale) >= max(3, n_feeds * 3 // 4):
+                # quasi tutte «non aggiornate» insieme: e' la raccolta ad essere ferma, non le fonti
+                lines.append(f"⚠️ {len(stale)} fonti su {n_feeds} non aggiornate da oltre 2 ore: "
+                             "la raccolta potrebbe essere ferma (rssintel-fetch).")
+                new = [p for p in new if p not in stale]
+            for p in new:
+                lines.append(f"⚠️ {esc(p['name'])} — {esc(' · '.join(p['why']))}")
+            what = {"error": "errore risolto", "stale": "di nuovo aggiornata", "silent": "ha ripreso a pubblicare"}
+            for p in back:
+                lines.append(f"✅ {esc(p['name'])} — " + ("di nuovo regolare" if not p["still"] else
+                             ", ".join(what.get(k, k) for k in p["gone"]) + " (restano altri problemi)"))
+            chunks, cur = [], ""
+            for line in lines:                       # a pezzi sotto i 4096, mai tagliato
+                line = line if len(line) <= 1000 else line[:999] + "…"
+                if len(cur) + len(line) + 1 > 3900:
+                    chunks.append(cur); cur = ""
+                cur = f"{cur}\n{line}" if cur else line
+            chunks.append(cur)
+            audible = bool(new) or len(lines) > 1 and lines[1].startswith("⚠️")
+            chats = await asyncio.to_thread(core.admin_chats)
+            delivered = not chats                    # nessun amministratore collegato: niente da recuperare
+            for chat in chats:
+                try:
+                    for c in chunks:
+                        await context.bot.send_message(chat, c, disable_notification=not audible)
+                    delivered = True
+                except TelegramError as e:
+                    log.warning("avviso sulle fonti non consegnato: %s", type(e).__name__)
+            if delivered:
+                await asyncio.to_thread(core.health_commit, state)
+        except Exception as e:
+            log.warning("controllo delle fonti non riuscito: %s", type(e).__name__)
+
     @guarded("sconosciuto")
     async def on_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
         await reply(update, "Comando sconosciuto. /aiuto")
@@ -1138,6 +1407,10 @@ def run_bot() -> int:
         if n:
             log.info("notifiche rimaste a meta' invio rimesse in coda: %d", n)
         app.job_queue.run_repeating(push_job, interval=PUSH_EVERY, first=min(10.0, PUSH_EVERY), name="push")
+        app.job_queue.run_repeating(morning_job, interval=float(os.environ.get("RSSINTEL_BOT_MORNING_S", "60")),
+                                    first=20, name="morning")
+        health_every = float(os.environ.get("RSSINTEL_BOT_HEALTH_S", "900"))
+        app.job_queue.run_repeating(health_job, interval=health_every, first=min(120.0, health_every), name="health")
         noisy_every = float(os.environ.get("RSSINTEL_BOT_NOISY_S", "3600"))
         app.job_queue.run_repeating(noisy_job, interval=noisy_every, first=min(600.0, noisy_every), name="noisy")
 
@@ -1185,6 +1458,9 @@ def run_bot() -> int:
     app.add_handler(CallbackQueryHandler(cb_a, pattern=RE_A))
     app.add_handler(CallbackQueryHandler(cb_n, pattern=RE_N))
     app.add_handler(CallbackQueryHandler(cb_vb, pattern=RE_VB))
+    app.add_handler(CommandHandler(["oggi", "bollettino"], cmd_oggi, filters=private))
+    app.add_handler(CallbackQueryHandler(cb_b, pattern=RE_B))
+    app.add_handler(CallbackQueryHandler(cb_bp, pattern=RE_BP))
     app.add_handler(CallbackQueryHandler(cb_noop))           # "-" e qualunque dato non riconosciuto
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & private, on_text))
     app.add_handler(MessageHandler(filters.COMMAND & private, on_unknown))

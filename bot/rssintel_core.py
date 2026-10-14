@@ -1329,3 +1329,148 @@ def noisy_instant(owner_links: dict | None = None) -> list[dict]:
             "(SELECT COUNT(*) FROM watch_hits w WHERE w.search_id = s.id AND w.found_at > datetime('now', '-2 day') "
             " AND w.found_at <= datetime('now', '-1 day')) > 5").fetchall()
     return [{"id": a, "owner": b, "name": c} for a, b, c in rows]
+
+
+# ========================================================== bollettino (L5)
+#
+# Stesse regole di bollettino.php: giorno di calendario italiano, articoli per
+# COALESCE(published_at, fetched_at), sezioni per tipo di fonte nell'ordine
+# «raro e mirato prima», limiti 12 (generalista, non classificate) e 40 (le
+# altre), allerte del giorno dell'utente, salute dei feed con la regola di
+# Poisson (silenzio anomalo rispetto al ritmo dei 23 giorni precedenti).
+
+BULLETIN_ORDER = ["specialistica", "istituzionale", "analisi", "blog", "advocacy", "generalista", "__none"]
+BULLETIN_CAP = {"generalista": 12, "__none": 12}
+BULLETIN_CAP_DEFAULT = 40
+WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
+
+
+def today_local() -> str:
+    return datetime.now(TZ).strftime("%Y-%m-%d")
+
+
+def day_bounds_utc(day: str) -> tuple[str, str]:
+    """Come day_bounds_utc() in lib.php: estremi UTC del giorno italiano (00:00:00 - 23:59:59)."""
+    d = datetime.strptime(day, "%Y-%m-%d")
+    a = d.replace(hour=0, minute=0, second=0, tzinfo=TZ).astimezone(timezone.utc)
+    b = d.replace(hour=23, minute=59, second=59, tzinfo=TZ).astimezone(timezone.utc)
+    return a.strftime("%Y-%m-%d %H:%M:%S"), b.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def day_label(day: str) -> str:
+    d = datetime.strptime(day, "%Y-%m-%d")
+    return f"{WEEKDAYS[d.weekday()]} {d:%d/%m/%Y}"
+
+
+def section_label(k: str) -> str:
+    return "non classificate" if k == "__none" else CATEGORIES.get(k, k)
+
+
+def feed_health(b: str | None = None, a: str | None = None) -> tuple[list[dict], int]:
+    """Problemi dei feed attivi, come bollettino.php. [a, b] = giorno in esame (UTC).
+    Stesso ordine della pagina: articoli del giorno decrescenti, poi nome."""
+    b = b or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    a = a or b
+    with db() as con:
+        rows = con.execute(
+            "SELECT f.id, COALESCE(f.title, f.url) AS name, f.last_fetch_at, f.last_error, "
+            "(SELECT COUNT(*) FROM items i WHERE i.feed_id = f.id "
+            "  AND COALESCE(i.published_at, i.fetched_at) > datetime(?, '-7 days') "
+            "  AND COALESCE(i.published_at, i.fetched_at) <= ?), "
+            "(SELECT COUNT(*) FROM items i WHERE i.feed_id = f.id "
+            "  AND COALESCE(i.published_at, i.fetched_at) > datetime(?, '-30 days') "
+            "  AND COALESCE(i.published_at, i.fetched_at) <= datetime(?, '-7 days')), "
+            "(SELECT COUNT(*) FROM items i WHERE i.feed_id = f.id "
+            "  AND COALESCE(i.published_at, i.fetched_at) BETWEEN ? AND ?) AS n_day "
+            "FROM feeds f WHERE f.enabled = 1 ORDER BY n_day DESC, name COLLATE NOCASE",
+            (b, b, b, b, a, b)).fetchall()
+    now = datetime.now(timezone.utc)
+    out = []
+    for fid, name, last_fetch, err, n7, nbase, _ in rows:
+        why, kinds = [], []
+        if err:
+            why.append("errore: " + str(err)[:120]); kinds.append("error")
+        if last_fetch:
+            try:
+                lf = datetime.strptime(last_fetch[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                if lf < now - timedelta(hours=2):
+                    why.append("non aggiornato dal " + lf.astimezone(TZ).strftime("%d/%m/%Y %H:%M")); kinds.append("stale")
+            except ValueError:
+                pass
+        expected = nbase / 23 * 7
+        if n7 == 0 and expected >= 3:
+            why.append(f"nessun articolo in 7 giorni, contro ~{expected:.1f} attesi al suo ritmo abituale".replace(".", ",", 1))
+            kinds.append("silent")
+        if why:
+            out.append({"id": fid, "name": name, "why": why, "kinds": kinds})
+    return out, len(rows)
+
+
+def bulletin(day: str, owner: str) -> dict:
+    a, b = day_bounds_utc(day)
+    with db() as con:
+        rows = con.execute(
+            "SELECT i.id, i.title, i.link, i.published_at, i.fetched_at, COALESCE(f.title, f.url), "
+            "f.category, f.reliability FROM items i JOIN feeds f ON f.id = i.feed_id "
+            "WHERE COALESCE(i.published_at, i.fetched_at) BETWEEN ? AND ? "
+            "ORDER BY COALESCE(i.published_at, i.fetched_at) DESC, i.id DESC", (a, b)).fetchall()
+        alerts = con.execute(
+            "SELECT s.id, s.name, COUNT(*), SUM(w.seen = 0) FROM watch_hits w "
+            "JOIN saved_searches s ON s.id = w.search_id WHERE s.owner = ? AND w.found_at BETWEEN ? AND ? "
+            "GROUP BY s.id ORDER BY COUNT(*) DESC, s.name", (owner, a, b)).fetchall()
+        n_watches = con.execute("SELECT COUNT(*) FROM saved_searches WHERE watch = 1 AND owner = ?",
+                                (owner,)).fetchall()[0][0]
+        last_fetch = con.execute("SELECT MAX(last_fetch_at) FROM feeds WHERE enabled = 1").fetchall()[0][0]
+    keys = ("id", "title", "link", "published_at", "fetched_at", "feed", "category", "reliability")
+    by = {}
+    for r in rows:
+        x = dict(zip(keys, r))
+        by.setdefault(x["category"] if x["category"] in CATEGORIES else "__none", []).append(x)
+    problems, n_feeds = feed_health(b, a)
+    return {"day": day, "n_items": len(rows), "n_sources": len({r[5] for r in rows}), "last_fetch": last_fetch,
+            "sections": [{"key": k, "label": section_label(k), "rows": by[k],
+                          "cap": BULLETIN_CAP.get(k, BULLETIN_CAP_DEFAULT)} for k in BULLETIN_ORDER if by.get(k)],
+            "alerts": [{"id": a_, "name": n, "n": c, "unseen": u or 0} for a_, n, c, u in alerts],
+            "n_watches": n_watches, "problems": problems, "n_feeds": n_feeds}
+
+
+def admin_chats() -> list[int]:
+    with db() as con:
+        return [r[0] for r in con.execute(
+            "SELECT l.chat_id FROM tg_links l JOIN users u ON u.username = l.username "
+            "WHERE l.revoked_at IS NULL AND l.blocked_at IS NULL AND COALESCE(u.disabled, 0) = 0 "
+            "AND u.role = 'admin'").fetchall()]
+
+
+def health_changes() -> tuple[list[dict], list[dict], dict | None]:
+    """Confronta la salute dei feed con l'ultima comunicata: (nuovi problemi, rientrati, stato).
+
+    - Si avvisa solo ai cambi di stato, e solo se il cambio si ripete in DUE controlli
+      di fila: una fonte che va e viene a ogni giro non manda un avviso ogni volta.
+    - Lo stato nuovo NON si salva qui: lo salva health_commit() dopo la consegna, cosi'
+      un invio fallito non fa perdere l'avviso.
+    - Una fonte disattivata nel frattempo esce dall'elenco senza «di nuovo regolare».
+    """
+    problems, _ = feed_health()
+    now = {str(p["id"]): sorted(p["kinds"]) for p in problems}
+    for p in problems:
+        kv_set(f"feed_name:{p['id']}", p["name"])
+    if kv_get("health_candidate") != now:          # cambio non ancora confermato
+        kv_set("health_candidate", now)
+        return [], [], None
+    old = kv_get("health_state", {}) or {}
+    if old == now:
+        return [], [], None
+    with db() as con:
+        enabled = {str(r[0]) for r in con.execute("SELECT id FROM feeds WHERE enabled = 1").fetchall()}
+    names = {str(p["id"]): p for p in problems}
+    new = [dict(names[f], new_kinds=[k for k in kinds if k not in old.get(f, [])])
+           for f, kinds in now.items() if set(kinds) - set(old.get(f, []))]
+    back = [{"id": int(f), "name": kv_get(f"feed_name:{f}", f"fonte {f}"),
+             "gone": [k for k in kinds if k not in now.get(f, [])], "still": now.get(f, [])}
+            for f, kinds in old.items() if f in enabled and set(kinds) - set(now.get(f, []))]
+    return new, back, now
+
+
+def health_commit(state: dict) -> None:
+    kv_set("health_state", state)
