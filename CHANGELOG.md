@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-10-15 (2) — Bot Telegram, lotto L3: sentinelle e Novita'
+
+- `bot/rssintel_core.py` — sentinelle. Una sentinella e' una ricerca salvata
+  con l'allerta accesa (`saved_searches.watch`), scritta con la stessa SQL di
+  `search.php`: compare con 🔔 sul portale e `rssintel_watch.py` la riesegue.
+  - `create_watch` usa lo stesso upsert e lo stesso punto di partenza «adesso»
+    del portale. `free_name` evita di sovrascrivere una ricerca salvata diversa
+    con lo stesso nome: usa «nome (2)».
+  - `estimate` conta gli articoli al giorno degli ultimi 14 giorni con la
+    stessa condizione del worker.
+  - Accensione, spegnimento ed eliminazione seguono la semantica di
+    `search.php`; «viste» usa la stessa SQL di `novita.php`. Ogni azione e'
+    vincolata al proprietario nella SQL.
+  - Nuova tabella `tg_watch_prefs` (modalita', pausa, scadenza), che sparisce
+    con la ricerca (ON DELETE CASCADE).
+  - La scadenza scatta una volta sola: se la riaccendi dal web non si
+    rispegne. «Prolunga» porta ad almeno 7 giorni da adesso (due tocchi non si
+    sommano) e riaccende una sentinella gia' scaduta.
+  - I promemoria si segnano solo dopo un invio riuscito.
+  - Senza preferenze, la modalita' e' il riepilogo, anche per le sentinelle
+    create dal web.
+- `bot/rssintel_bot.py` (versione L3):
+  - `/segui` mostra un'anteprima con la stima, la modalita' consigliata
+    (riepilogo oltre 5 al giorno) e la scadenza (7 giorni, 14 preselezionati,
+    mai). «Crea» vale una volta sola;
+  - 🔔 Segui sotto i risultati della ricerca;
+  - `/allerte`: elenco e scheda con modalita', pausa, spegnimento, proroga ed
+    eliminazione con conferma;
+  - `/novita`: segnalazioni raggruppate per sentinella, con «Viste» per
+    sentinella o tutte;
+  - controllo periodico delle scadenze con promemoria il giorno prima. Un
+    invio fallito non ferma gli altri; un bot bloccato viene annotato;
+  - le sentinelle proposte al primo collegamento arrivano da un file fuori dal
+    codice (`RSSINTEL_BOT_SUGGEST_FILE`) e non si crea nulla senza un tocco.
+- `schema.sql`: `tg_watch_prefs`.
+- `bot/tests/test_l3.py`: 51 controlli. Coprono:
+  - creazione da proposta, da `/segui` e dai risultati;
+  - stima uguale alla query del worker;
+  - gestione completa da `/allerte`;
+  - azioni su sentinelle altrui rifiutate;
+  - Novita' e «viste» in tutti e due i sensi;
+  - scadenza, promemoria e proroga;
+  - i casi trovati dalla revisione;
+  - il vero `rssintel_watch.py` che esegue le sentinelle create dal bot.
+
 ## 2026-10-15 — Bot Telegram, lotto L2: ricerca e lettura
 
 Dal telefono si cerca nell'archivio e si leggono gli articoli, senza passare dal

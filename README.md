@@ -42,7 +42,7 @@ worker. Nessun framework, nessun database server, nessuna build.
 - `captures` — catture visive (i file stanno fuori dalla webroot)
 - `access_log` / `login_attempts` / `ip_geo_cache` — log accessi e tentativi di login
 - `site_settings` — impostazioni globali (tema)
-- `tg_links` / `tg_link_codes` — account Telegram collegati e codici di collegamento (le crea il bot)
+- `tg_links` / `tg_link_codes` / `tg_watch_prefs` — account Telegram collegati, codici di collegamento, preferenze delle sentinelle (le crea il bot)
 
 ## Installazione
 
@@ -137,8 +137,9 @@ Requisiti: `chromium` e Pillow nel Python che esegue il worker.
 `bot/rssintel_bot.py` porta RSSIntel sul telefono senza passare dal portale:
 un servizio Python separato (`python-telegram-bot` 22.8, long polling, nessuna
 porta in ingresso) che legge e scrive lo stesso database. Lo si costruisce a
-lotti; questa versione (L2) collega l'account, cerca e fa leggere. Allerte con
-notifiche e bollettino arrivano nei lotti successivi.
+lotti; questa versione (L3) collega l'account, cerca, fa leggere e gestisce le
+sentinelle. Le notifiche automatiche e il bollettino arrivano nei lotti
+successivi.
 
 - **Ricerca.** Si scrive una parola, oppure `/cerca`.
   - I risultati sono **gli stessi di `search.php`**: stessa query FTS, stesso
@@ -153,6 +154,18 @@ notifiche e bollettino arrivano nei lotti successivi.
 - **Lettura.** Ogni risultato apre una scheda: estratto, «Apri fonte», «Link»
   da copiare e il testo completo, in messaggi da circa 3.500 caratteri oppure
   come file `.txt` se è lungo.
+- **Sentinelle.** `/segui parole` crea un'allerta sui nuovi articoli.
+  - Prima di crearla mostra quanti ne avrebbe trovati negli ultimi 14 giorni,
+    con la stessa condizione del worker, e suggerisce la modalita':
+    istantanea, riepilogo oppure solo Novità.
+  - Si puo' dare una scadenza, utile per seguire un evento.
+  - E' la stessa ricerca salvata del portale: compare con 🔔 su `search.php` e
+    la riesegue `rssintel_watch.py`.
+  - `/allerte` le gestisce; `/novita` mostra le segnalazioni non viste. «Visto»
+    e' la stessa colonna di `novita.php`.
+  - Le sentinelle da proporre al primo collegamento si leggono da un file
+    indicato da `RSSINTEL_BOT_SUGGEST_FILE`, una per riga:
+    `Nome | query | istantanea|riepilogo|novita`.
 - **Bottoni.** Portano solo un gettone corto: la query vera resta nel database
   di stato del bot, legata all'account e valida 48 ore.
 

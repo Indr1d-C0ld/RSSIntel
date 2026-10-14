@@ -51,11 +51,12 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rssintel_core as core  # noqa: E402
 
-VERSION = "L2"
+VERSION = "L3"
 EXIT_CONFIG = 78                    # EX_CONFIG: la unit non riavvia
 TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{30,}")
 RATE_PER_MIN = int(os.environ.get("RSSINTEL_BOT_RATE_PER_MIN", "30"))   # comandi e bottoni al minuto
 WATCHDOG_EVERY = float(os.environ.get("RSSINTEL_BOT_WATCHDOG_S", "300"))   # controllo del token
+WATCH_JOBS_EVERY = float(os.environ.get("RSSINTEL_BOT_WATCH_JOBS_S", "600"))   # scadenze delle sentinelle
 LINK_FAILS_MAX = 5                  # tentativi di codice sbagliati ...
 LINK_FAILS_WINDOW = 15 * 60         # ... in 15 minuti
 
@@ -196,6 +197,9 @@ def run_bot() -> int:
 
     commands = [
         BotCommand("cerca", "cerca nell'archivio (oppure scrivi direttamente)"),
+        BotCommand("segui", "crea una sentinella sui nuovi articoli"),
+        BotCommand("allerte", "le tue sentinelle"),
+        BotCommand("novita", "segnalazioni non ancora viste"),
         BotCommand("aiuto", "cosa sa fare il bot"),
         BotCommand("stato", "stato della raccolta e del bot"),
         BotCommand("esci", "scollega questo account"),
@@ -289,6 +293,10 @@ def run_bot() -> int:
                 log.warning("impossibile impostare il menu dei comandi")
             await reply(update, f"✅ Collegato a RSSIntel come <b>{esc(username)}</b>.\n\n"
                                 "Scrivi /aiuto per vedere cosa posso fare.")
+            ws = await asyncio.to_thread(core.list_watches, username)
+            if not any(w["watch"] for w in ws):
+                await show_suggestions(update, "Vuoi partire da qualche sentinella? Tocca per vedere quanti "
+                                               "articoli troverebbe; non creo nulla senza la tua conferma.")
             return
         if link:
             await reply(update, f"Sei collegato come <b>{esc(link['username'])}</b>. /aiuto")
@@ -307,9 +315,13 @@ def run_bot() -> int:
                     "Sintassi come sul portale: <code>Iran OR Israele</code>, "
                     "<code>\"valle del Sacco\"</code>, <code>Hezbollah*</code>, <code>title:gaza</code>. "
                     "Se una ricerca non è valida la reinterpreto e te lo dico.\n\n"
+                    "<b>Sentinelle</b>: <code>/segui parole</code> crea un'allerta sui nuovi articoli "
+                    "(prima ti dico quanti ne avrebbe trovati negli ultimi 14 giorni); "
+                    "/allerte per gestirle, /novita per le segnalazioni non viste. "
+                    "Sono le stesse ricerche salvate del portale.\n\n"
                     "/stato — ultimo giro di raccolta e stato del bot\n"
                     "/esci — scollega questo account\n\n"
-                    "<i>In arrivo: sentinelle con notifiche, bollettino del giorno.</i>")
+                    "<i>In arrivo: notifiche automatiche delle sentinelle, bollettino del giorno.</i>")
 
     @guarded("stato")
     async def cmd_stato(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
@@ -412,7 +424,8 @@ def run_bot() -> int:
             if r["page"] < r["pages"]:
                 nav.append(InlineKeyboardButton("▶", callback_data=f"s:{tok}:{r['page'] + 1}"))
             rows.append(nav)
-        rows.append([InlineKeyboardButton("🗂 Categoria", callback_data=f"sc:{tok}")])
+        rows.append([InlineKeyboardButton("🗂 Categoria", callback_data=f"sc:{tok}"),
+                     InlineKeyboardButton("🔔 Segui", callback_data=f"sw:{tok}")])
         return text, InlineKeyboardMarkup(rows)
 
     async def show_results(update: Update, r: dict, tok: str, edit: bool) -> None:
@@ -574,6 +587,319 @@ def run_bot() -> int:
             except TelegramError:
                 pass
 
+    # ------------------------------------------------------ sentinelle (L3)
+
+    RE_W = re.compile(r"^w:([a-z2-9]{8}):(m:[idn]|e:(?:0|7|14)|ok|no)$")
+    RE_SW = re.compile(r"^sw:([a-z2-9]{8})$")
+    RE_G = re.compile(r"^g:(\d)$")
+    RE_A = re.compile(r"^(al|a:\d{1,9}|am:\d{1,9}:[idn]|ap:\d{1,9}:(?:0|1|7)|aw:\d{1,9}:[01]|"
+                      r"ae:\d{1,9}:7|ad:\d{1,9}|ay:\d{1,9})$")
+    RE_N = re.compile(r"^(nva|nv:\d{1,9})$")
+    SUGGEST = core.load_suggestions(os.environ.get("RSSINTEL_BOT_SUGGEST_FILE"))
+    NOTIFY_NOTE = ("<i>Le notifiche automatiche arrivano con il prossimo aggiornamento del bot; "
+                   "intanto le segnalazioni sono in /novita e nella pagina Novità del portale.</i>")
+
+    def fmt_rate(x: float) -> str:
+        return f"{x:.1f}".replace(".", ",")
+
+    def days_label(d) -> str:
+        return "mai" if not d else f"{d} giorni"
+
+    async def show_pending(update: Update, tok: str, pd: dict, est: dict, edit: bool) -> None:
+        lines = [f"🔔 <b>Nuova sentinella</b>: {esc(pd['name'])}",
+                 f"Query: <code>{esc(pd['q'])}</code>"]
+        if pd["orig"] and pd["orig"] != pd["q"]:
+            lines.append(f"<i>interpretata da</i> <code>{esc(pd['orig'])}</code>")
+        lines.append(f"Negli ultimi {est['days']} giorni: <b>{fmt_rate(est['per_day'])} articoli al giorno</b>"
+                     + (f" (massimo {est['max_day']} in un giorno)" if est["max_day"] else "") + ".")
+        lines.append("Consiglio: " + core.MODES[core.suggest_mode(est["per_day"])] + ".")
+        lines.append(f"\nModalità: <b>{core.MODES[pd['mode']]}</b> · scadenza: <b>{days_label(pd['days'])}</b>")
+        lines.append(NOTIFY_NOTE)
+        mrow = [InlineKeyboardButton(("✓ " if pd["mode"] == m else "") + core.MODES[m], callback_data=f"w:{tok}:m:{c}")
+                for c, m in core.MODE_CODE.items()]
+        erow = [InlineKeyboardButton(("✓ " if (pd["days"] or 0) == d else "") + days_label(d), callback_data=f"w:{tok}:e:{d}")
+                for d in (7, 14, 0)]
+        kb = InlineKeyboardMarkup([mrow[:2], mrow[2:], erow,
+                                   [InlineKeyboardButton("✅ Crea", callback_data=f"w:{tok}:ok"),
+                                    InlineKeyboardButton("Annulla", callback_data=f"w:{tok}:no")]])
+        text = "\n".join(lines)
+        if edit:
+            try:
+                await update.callback_query.edit_message_text(text, reply_markup=kb)
+            except BadRequest as e:
+                if "not modified" not in str(e).lower():
+                    raise
+        else:
+            await update.effective_chat.send_message(text, reply_markup=kb)
+
+    async def start_pending(update: Update, link, q: str, orig: str | None = None, name: str | None = None,
+                            mode: str | None = None, days: int | None = 14) -> None:
+        try:
+            await update.effective_chat.send_action(ChatAction.TYPING)
+        except TelegramError:
+            pass
+        try:
+            eff, _ = await asyncio.to_thread(core.resolve_query, q)
+            est = await asyncio.to_thread(core.estimate, eff)
+        except core.SearchTooBroad:
+            await update.effective_chat.send_message("Ricerca troppo larga per una sentinella: restringila.")
+            return
+        except core.SearchError:
+            await update.effective_chat.send_message("Non riesco a interpretare questa ricerca. /aiuto")
+            return
+        free, same = await asyncio.to_thread(core.free_name, link["username"], name or orig or q, eff)
+        pd = {"q": eff, "orig": orig if orig is not None else q, "name": free,
+              "mode": mode or core.suggest_mode(est["per_day"]), "days": days}
+        tok = await asyncio.to_thread(core.pend_new, link["link_id"], pd["q"], pd["orig"], pd["name"], pd["mode"], pd["days"])
+        await show_pending(update, tok, pd, est, edit=False)
+
+    async def show_suggestions(update: Update, intro: str) -> None:
+        if not SUGGEST:
+            return
+        btn = [[InlineKeyboardButton(f"🔔 {x['name']}", callback_data=f"g:{i}")] for i, x in enumerate(SUGGEST)]
+        await update.effective_chat.send_message(intro, reply_markup=InlineKeyboardMarkup(btn))
+
+    @guarded("segui")
+    async def cmd_segui(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        q = clean_query(" ".join(context.args or []))
+        if not q:
+            await reply(update, "Scrivi <code>/segui</code> seguito dalle parole da sorvegliare, "
+                                "per esempio <code>/segui flydubai</code>. Oppure, da una ricerca, tocca 🔔 Segui.")
+            await show_suggestions(update, "Oppure scegli una di queste:")
+            return
+        await start_pending(update, link, q)
+
+    @guarded("segui")
+    async def cb_sw(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        c = await asyncio.to_thread(core.ctx_get, RE_SW.match(update.callback_query.data).group(1), link["link_id"])
+        if not c:
+            return await expired(update)
+        await start_pending(update, link, c["q"], orig=c["orig"])
+
+    @guarded("suggerita")
+    async def cb_g(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        i = int(RE_G.match(update.callback_query.data).group(1))
+        if i >= len(SUGGEST):
+            return
+        x = SUGGEST[i]
+        await start_pending(update, link, x["q"], name=x["name"], mode=x["mode"], days=None)
+
+    @guarded("segui_scelta")
+    async def cb_w(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        m = RE_W.match(update.callback_query.data)
+        tok, act = m.group(1), m.group(2)
+        pd = await asyncio.to_thread(core.pend_get, tok, link["link_id"])
+        if not pd:
+            await update.callback_query.answer("Richiesta scaduta: rifai /segui.")
+            return
+        if act == "no":
+            await asyncio.to_thread(core.pend_drop, tok, link["link_id"])
+            await update.callback_query.edit_message_text("Nessuna sentinella creata.")
+            return
+        if act == "ok":
+            if not await asyncio.to_thread(core.pend_drop, tok, link["link_id"]):
+                return                            # gia' creata da un tocco precedente
+            sid, replaced = await asyncio.to_thread(core.create_watch, link["username"], pd["name"], pd["q"],
+                                                    pd["mode"], pd["days"] or None)
+            msg = (f"✅ Sentinella <b>{esc(pd['name'])}</b> attiva: {core.MODES[pd['mode']]}, "
+                   f"scadenza {days_label(pd['days'])}.\n"
+                   + ("<i>Esisteva già questa ricerca salvata: l'ho aggiornata.</i>\n" if replaced else "")
+                   + "Da ora segnalo i nuovi articoli; la vedi anche nel portale con 🔔. /allerte per gestirla.")
+            await update.callback_query.edit_message_text(msg)
+            return
+        if act.startswith("m:"):
+            await asyncio.to_thread(core.pend_set, tok, link["link_id"], mode=core.MODE_CODE[act[2]])
+        else:
+            await asyncio.to_thread(core.pend_set, tok, link["link_id"], days=int(act[2:]) or None)
+        pd = await asyncio.to_thread(core.pend_get, tok, link["link_id"])
+        if not pd:
+            await update.callback_query.answer("Richiesta scaduta: rifai /segui.")
+            return
+        try:
+            est = await asyncio.to_thread(core.estimate, pd["q"])
+        except (core.SearchTooBroad, core.SearchError):
+            est = {"days": core.ESTIMATE_DAYS, "total": 0, "per_day": 0.0, "max_day": 0}
+        await show_pending(update, tok, pd, est, edit=True)
+
+    def watch_line(w: dict) -> str:
+        bits = [core.MODES.get(w["mode"], w["mode"]) if w["watch"] else "🔕 spenta"]
+        if w["unseen"]:
+            bits.append(f"{w['unseen']} non viste")
+        if w["paused_until"]:
+            bits.append("⏸ in pausa fino al " + core.fmt_dt(w["paused_until"]))
+        if w["expires_at"]:
+            bits.append("scade il " + core.fmt_dt(w["expires_at"]))
+        if w["last_error"]:
+            bits.append("⚠️ query non valida")
+        name = w["name"] if len(w["name"]) <= 60 else w["name"][:59] + "…"
+        return f"{'🔔' if w['watch'] else '🔕'} <b>{esc(name)}</b> — {' · '.join(bits)}"
+
+    async def show_watch_list(update: Update, link, edit: bool) -> None:
+        ws = await asyncio.to_thread(core.list_watches, link["username"])
+        if not ws:
+            text = "Non hai sentinelle. Crea la prima con <code>/segui parole</code>."
+            kb = None
+        else:
+            lines, shown = ["<b>Le tue sentinelle</b>\n"], 0
+            for w in ws[:30]:
+                line = watch_line(w)
+                if sum(len(x) + 1 for x in lines) + len(line) > 3800:
+                    break
+                lines.append(line); shown += 1
+            if shown < len(ws):
+                lines.append(f"\n… e altre {len(ws) - shown} nel portale.")
+            text = "\n".join(lines)
+            ws = ws[:shown]
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(w["name"][:40], callback_data=f"a:{w['id']}")]
+                                       for w in ws[:30]])
+        if edit:
+            await update.callback_query.edit_message_text(text, reply_markup=kb)
+        else:
+            await update.effective_chat.send_message(text, reply_markup=kb)
+
+    async def show_watch(update: Update, link, sid: int, note: str = "") -> None:
+        w = await asyncio.to_thread(core.get_watch, link["username"], sid)
+        if not w:
+            await update.callback_query.edit_message_text("Sentinella non trovata (forse eliminata).")
+            return
+        qq = w["q"] if len(w["q"]) <= 300 else w["q"][:299] + "…"
+        lines = [watch_line(w), f"Query: <code>{esc(qq)}</code>"]
+        if note:
+            lines.append(note)
+        rows = [[InlineKeyboardButton(("✓ " if w["mode"] == m else "") + core.MODES[m], callback_data=f"am:{sid}:{c}")
+                 for c, m in list(core.MODE_CODE.items())[:2]],
+                [InlineKeyboardButton(("✓ " if w["mode"] == "novita" else "") + core.MODES["novita"], callback_data=f"am:{sid}:n")]]
+        if w["paused_until"]:
+            rows.append([InlineKeyboardButton("▶ Riprendi le notifiche", callback_data=f"ap:{sid}:0")])
+        else:
+            rows.append([InlineKeyboardButton("⏸ Pausa 24 ore", callback_data=f"ap:{sid}:1"),
+                         InlineKeyboardButton("⏸ Pausa 7 giorni", callback_data=f"ap:{sid}:7")])
+        row = [InlineKeyboardButton("🔕 Spegni" if w["watch"] else "🔔 Accendi", callback_data=f"aw:{sid}:{0 if w['watch'] else 1}")]
+        if w["expires_at"]:
+            row.append(InlineKeyboardButton("⏳ Prolunga 7 giorni", callback_data=f"ae:{sid}:7"))
+        rows.append(row)
+        rows.append([InlineKeyboardButton("🗑 Elimina", callback_data=f"ad:{sid}"),
+                     InlineKeyboardButton("« Elenco", callback_data="al")])
+        try:
+            await update.callback_query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
+        except BadRequest as e:
+            if "not modified" not in str(e).lower():
+                raise
+
+    @guarded("allerte")
+    async def cmd_allerte(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        await show_watch_list(update, link, edit=False)
+
+    @guarded("allerte_azione")
+    async def cb_a(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        data, owner = update.callback_query.data, link["username"]
+        if data == "al":
+            return await show_watch_list(update, link, edit=True)
+        parts = data.split(":")
+        verb, sid = parts[0], int(parts[1])
+        if verb == "a":
+            return await show_watch(update, link, sid)
+        if verb == "am":
+            await asyncio.to_thread(core.set_mode, owner, sid, core.MODE_CODE[parts[2]])
+            return await show_watch(update, link, sid)
+        if verb == "ap":
+            await asyncio.to_thread(core.set_pause, owner, sid, int(parts[2]))
+            return await show_watch(update, link, sid)
+        if verb == "aw":
+            await asyncio.to_thread(core.set_watch, owner, sid, parts[2] == "1")
+            return await show_watch(update, link, sid, "" if parts[2] == "1" else
+                                    "<i>Spenta: niente più segnalazioni nuove; quelle trovate restano in /novita.</i>")
+        if verb == "ae":
+            await asyncio.to_thread(core.extend_watch, owner, sid, 7)
+            return await show_watch(update, link, sid, "<i>Scadenza prolungata di 7 giorni.</i>")
+        if verb == "ad":
+            w = await asyncio.to_thread(core.get_watch, owner, sid)
+            if not w:
+                return await show_watch(update, link, sid)
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Sì, elimina", callback_data=f"ay:{sid}"),
+                                        InlineKeyboardButton("Annulla", callback_data=f"a:{sid}")]])
+            await update.callback_query.edit_message_text(
+                f"Eliminare la sentinella <b>{esc(w['name'])}</b>? Sparisce anche dal portale, "
+                "con le sue segnalazioni.", reply_markup=kb)
+            return
+        if verb == "ay":
+            ok = await asyncio.to_thread(core.delete_watch, owner, sid)
+            await update.callback_query.edit_message_text("Sentinella eliminata." if ok else "Già eliminata.")
+
+    async def show_novita(update: Update, link, edit: bool) -> None:
+        groups = await asyncio.to_thread(core.unseen, link["username"])
+        if not groups:
+            text, kb = "Nessuna segnalazione da vedere. ✓", None
+        else:
+            tot = sum(g["n"] for g in groups)
+            lines, rows, items = [f"🔔 <b>{tot} segnalazion{'e' if tot == 1 else 'i'} da vedere</b>"], [], []
+            for g in groups[:10]:
+                lines.append(f"\n<b>{esc(g['name'])}</b> — {g['n']}")
+                for x in g["items"]:
+                    items.append(x["id"])
+                    lines.append(f"<b>{len(items)}.</b> {esc(core.clean_title(x['title']) or '(senza titolo)')} "
+                                 f"<i>· {esc(x['feed'] or '')} · {core.fmt_dt(x['published_at'] or x['fetched_at'])}</i>")
+                if g["n"] > len(g["items"]):
+                    lines.append(f"<i>… e altre {g['n'] - len(g['items'])}</i>")
+                rows.append([InlineKeyboardButton(f"✓ Viste: {g['name'][:30]} ({g['n']})", callback_data=f"nv:{g['id']}")])
+            if len(groups) > 10:
+                lines.append(f"\n<i>… e altre {len(groups) - 10} sentinelle con segnalazioni.</i>")
+            btn = [InlineKeyboardButton(f"📄{k}", callback_data=f"i:{iid}") for k, iid in enumerate(items[:8], 1)]
+            rows = [btn[i:i + 4] for i in range(0, len(btn), 4)] + rows
+            rows.append([InlineKeyboardButton("✓ Segna tutto come visto", callback_data="nva")])
+            text = "\n".join(lines)
+            if len(text) > 4000:
+                text = text[:3990].rsplit("\n", 1)[0] + "\n…"
+            kb = InlineKeyboardMarkup(rows)
+        if edit:
+            try:
+                await update.callback_query.edit_message_text(text, reply_markup=kb)
+            except BadRequest as e:
+                if "not modified" not in str(e).lower():
+                    raise
+        else:
+            await update.effective_chat.send_message(text, reply_markup=kb)
+
+    @guarded("novita")
+    async def cmd_novita(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        await show_novita(update, link, edit=False)
+
+    @guarded("novita_viste")
+    async def cb_n(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        data = update.callback_query.data
+        n = await asyncio.to_thread(core.mark_seen, link["username"], None if data == "nva" else int(data[3:]))
+        try:
+            await update.callback_query.answer(f"{n} segnate come viste")
+        except TelegramError:
+            pass
+        await show_novita(update, link, edit=True)
+
+    async def watch_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Scadenze delle sentinelle: promemoria il giorno prima, poi spegnimento (una volta sola)."""
+        async def deliver(owner: str, text: str, kb=None) -> bool:
+            sent = False
+            for chat in await asyncio.to_thread(core.chats_of, owner):
+                try:
+                    await context.bot.send_message(chat, text, reply_markup=kb)
+                    sent = True
+                except Forbidden:                  # bot bloccato: lo si annota e si passa oltre
+                    await asyncio.to_thread(core.set_blocked, chat, True)
+                except TelegramError as e:
+                    log.warning("avviso di scadenza non consegnato: %s", type(e).__name__)
+            return sent
+
+        try:
+            for r in await asyncio.to_thread(core.reminders_due):
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏳ Prolunga 7 giorni", callback_data=f"ae:{r['id']}:7")]])
+                if await deliver(r["owner"], f"⏳ La sentinella <b>{esc(r['name'])}</b> scade il "
+                                             f"{core.fmt_dt(r['expires_at'])}.", kb):
+                    await asyncio.to_thread(core.mark_reminded, r["id"])
+            for r in await asyncio.to_thread(core.expire_due):
+                await deliver(r["owner"], f"⌛ La sentinella <b>{esc(r['name'])}</b> è scaduta ed è stata spenta. "
+                                          "Puoi riaccenderla da /allerte o dal portale.")
+        except Exception as e:
+            log.warning("controllo scadenze non riuscito: %s", type(e).__name__)
+
     @guarded("sconosciuto")
     async def on_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
         await reply(update, "Comando sconosciuto. /aiuto")
@@ -638,6 +964,8 @@ def run_bot() -> int:
         log.info("avviato (%s): %d account collegati", VERSION, len(links))
         app.job_queue.run_repeating(token_watchdog, interval=WATCHDOG_EVERY, first=WATCHDOG_EVERY,
                                     name="token_watchdog")
+        app.job_queue.run_repeating(watch_jobs, interval=WATCH_JOBS_EVERY, first=min(30.0, WATCH_JOBS_EVERY),
+                                    name="watch_jobs")
 
     async def token_watchdog(context: ContextTypes.DEFAULT_TYPE) -> None:
         # Un token revocato a bot avviato non arriva a run_polling: la libreria
@@ -674,6 +1002,14 @@ def run_bot() -> int:
     app.add_handler(CallbackQueryHandler(cb_cat, pattern=RE_CAT))
     app.add_handler(CallbackQueryHandler(cb_item, pattern=RE_ITEM))
     app.add_handler(CallbackQueryHandler(cb_text, pattern=RE_TEXT))
+    app.add_handler(CommandHandler("segui", cmd_segui, filters=private))
+    app.add_handler(CommandHandler("allerte", cmd_allerte, filters=private))
+    app.add_handler(CommandHandler("novita", cmd_novita, filters=private))
+    app.add_handler(CallbackQueryHandler(cb_sw, pattern=RE_SW))
+    app.add_handler(CallbackQueryHandler(cb_g, pattern=RE_G))
+    app.add_handler(CallbackQueryHandler(cb_w, pattern=RE_W))
+    app.add_handler(CallbackQueryHandler(cb_a, pattern=RE_A))
+    app.add_handler(CallbackQueryHandler(cb_n, pattern=RE_N))
     app.add_handler(CallbackQueryHandler(cb_noop))           # "-" e qualunque dato non riconosciuto
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & private, on_text))
     app.add_handler(MessageHandler(filters.COMMAND & private, on_unknown))

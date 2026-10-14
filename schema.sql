@@ -244,3 +244,17 @@ CREATE TABLE IF NOT EXISTS tg_link_codes (
   expires_at TEXT NOT NULL,
   used_at    TEXT
 );
+
+-- Preferenze delle sentinelle che riguardano solo il bot Telegram: modalita' di
+-- notifica (istantanea / riepilogo / solo Novita'), pausa e scadenza. La
+-- sentinella vera resta la ricerca salvata (saved_searches.watch): queste
+-- spariscono con lei. Senza riga, la modalita' e' 'digest'.
+CREATE TABLE IF NOT EXISTS tg_watch_prefs (
+  search_id    INTEGER PRIMARY KEY REFERENCES saved_searches(id) ON DELETE CASCADE,
+  mode         TEXT NOT NULL DEFAULT 'digest' CHECK (mode IN ('instant', 'digest', 'novita')),
+  detail       TEXT NOT NULL DEFAULT 'titles' CHECK (detail IN ('titles', 'counts')),
+  paused_until TEXT,
+  expires_at   TEXT,
+  reminded_at  TEXT,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);

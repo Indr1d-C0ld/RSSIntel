@@ -65,7 +65,17 @@ CREATE TABLE IF NOT EXISTS tg_link_codes (
   expires_at TEXT NOT NULL,
   used_at    TEXT
 );
+CREATE TABLE IF NOT EXISTS tg_watch_prefs (
+  search_id    INTEGER PRIMARY KEY REFERENCES saved_searches(id) ON DELETE CASCADE,
+  mode         TEXT NOT NULL DEFAULT 'digest' CHECK (mode IN ('instant', 'digest', 'novita')),
+  detail       TEXT NOT NULL DEFAULT 'titles' CHECK (detail IN ('titles', 'counts')),
+  paused_until TEXT,
+  expires_at   TEXT,
+  reminded_at  TEXT,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
+TG_TABLES = {"tg_links", "tg_link_codes", "tg_watch_prefs"}
 
 STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
@@ -140,7 +150,7 @@ def ensure_schema(with_state: bool = True) -> None:
         have = {r[0] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'tg\\_%' ESCAPE '\\'"
         ).fetchall()}
-        if not {"tg_links", "tg_link_codes"} <= have:
+        if not TG_TABLES <= have:
             with write_tx(con):
                 for stmt in TG_SCHEMA.split(";"):
                     if stmt.strip():
@@ -295,11 +305,15 @@ def resolve_link(tg_user_id: int) -> dict | None:
 
 
 def touch_link(link_id: int) -> None:
-    """Aggiorna last_seen_at al massimo una volta ogni 10 minuti."""
+    """Aggiorna last_seen_at al massimo una volta ogni 10 minuti.
+
+    Chi scrive al bot non lo ha bloccato: si azzera anche blocked_at, perche'
+    l'evento «sbloccato» puo' andare perso (aggiornamenti scartati al riavvio).
+    """
     with db() as con:
         cur = con.execute(
-            "UPDATE tg_links SET last_seen_at = datetime('now') WHERE id = ? "
-            "AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-10 minutes'))",
+            "UPDATE tg_links SET last_seen_at = datetime('now'), blocked_at = NULL WHERE id = ? "
+            "AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-10 minutes') OR blocked_at IS NOT NULL)",
             (link_id,))
         cur.close()
 
@@ -635,3 +649,326 @@ def ctx_get(tok: str, link_id: int) -> dict | None:
 def ctx_set_cat(tok: str, link_id: int, cat: str) -> None:
     with state() as s:
         s.execute("UPDATE ctx SET cat = ? WHERE tok = ? AND link_id = ?", (cat, tok, link_id))
+
+
+# ========================================================== sentinelle (L3)
+#
+# Una sentinella e' una ricerca salvata con l'allerta accesa (saved_searches,
+# watch=1): la stessa cosa che si crea dal portale, scritta con la stessa SQL
+# di search.php, cosi' compare con 🔔 sul web e rssintel_watch.py la riesegue
+# dopo ogni raccolta. Le preferenze che riguardano solo il bot (modalita' di
+# notifica, pausa, scadenza) stanno in tg_watch_prefs, che sparisce da sola
+# con la ricerca (ON DELETE CASCADE): PHP e worker non vanno toccati.
+
+MODES = {"instant": "⚡ Istantanea", "digest": "📅 Riepilogo", "novita": "📥 Solo Novità"}
+MODE_CODE = {"i": "instant", "d": "digest", "n": "novita"}
+DEFAULT_MODE = "digest"         # anche per le sentinelle create dal web
+NAME_MAX = 80                   # come search.php
+ESTIMATE_DAYS = 14
+
+
+def resolve_query(q: str) -> tuple[str, int]:
+    """Forma che FTS accetta (la stessa logica della ricerca) e totale."""
+    r = search(q, per_page=1)
+    return r["effective"], r["total"]
+
+
+def estimate(q_effective: str, days: int = ESTIMATE_DAYS) -> dict:
+    """Articoli al giorno che la sentinella avrebbe trovato: la stessa
+    condizione di rssintel_watch.py (MATCH + fetched_at), sugli ultimi giorni."""
+    deadline = _time.monotonic() + SEARCH_BUDGET_S
+    with db() as con:
+        con.set_progress_handler(lambda: _time.monotonic() > deadline, 10_000)
+        try:
+            rows = con.execute(
+                "SELECT date(i.fetched_at), COUNT(*) FROM items_fts JOIN items i ON i.id = items_fts.rowid "
+                "WHERE items_fts MATCH ? AND i.fetched_at > datetime('now', ?) GROUP BY 1",
+                (q_effective, f"-{days} days")).fetchall()
+        except sqlite3.OperationalError as e:
+            if "interrupted" in str(e):
+                raise SearchTooBroad() from None
+            raise
+        finally:
+            con.set_progress_handler(None, 0)
+    total = sum(n for _, n in rows)
+    return {"days": days, "total": total, "per_day": total / days, "max_day": max((n for _, n in rows), default=0)}
+
+
+def suggest_mode(per_day: float) -> str:
+    # oltre 5 al giorno una notifica per giro di raccolta diventa rumore
+    return "digest" if per_day > 5 else "instant"
+
+
+def free_name(owner: str, name: str, q: str) -> tuple[str, bool]:
+    """Nome per una nuova sentinella che non sovrascriva una ricerca salvata diversa.
+
+    Il nome lo propone il bot (dalla query), non l'utente: se esiste gia' una
+    ricerca con quel nome ma un'altra query o un filtro per fonte, si usa
+    «nome (2)», «nome (3)»... Ritorna (nome, esiste_gia_identica).
+    """
+    base = " ".join(name.split())[:NAME_MAX] or q[:NAME_MAX]
+    with db() as con:
+        for n in range(1, 100):
+            cand = base if n == 1 else f"{base[:NAME_MAX - 6]} ({n})"
+            r = con.execute("SELECT q, feed_id FROM saved_searches WHERE owner = ? AND name = ?",
+                            (owner, cand)).fetchall()
+            if not r:
+                return cand, False
+            if r[0][0] == q and r[0][1] is None:
+                return cand, True              # la stessa ricerca: la si aggiorna
+    raise ValueError("troppe ricerche con lo stesso nome")
+
+
+def create_watch(owner: str, name: str, q: str, mode: str, expire_days: int | None) -> tuple[int, bool]:
+    """Salva (o aggiorna) la ricerca e accende l'allerta. Ritorna (id, sostituita).
+
+    Stessa SQL di search.php: upsert su (owner, name) e punto di partenza
+    «adesso» solo se l'allerta non era gia' accesa (niente storico).
+    """
+    name = name.strip()[:NAME_MAX]
+    if mode not in MODES:
+        raise ValueError("modalita' non valida")
+    with db() as con:
+        with write_tx(con):
+            old = con.execute("SELECT q, feed_id, result_limit FROM saved_searches WHERE owner = ? AND name = ?",
+                              (owner, name)).fetchall()
+            con.execute(
+                "INSERT INTO saved_searches(owner, name, q, feed_id, result_limit) VALUES (?, ?, ?, NULL, 50) "
+                "ON CONFLICT(owner, name) DO UPDATE SET q = excluded.q, feed_id = excluded.feed_id, "
+                "result_limit = excluded.result_limit, created_at = datetime('now')",
+                (owner, name, q))
+            con.execute(
+                "UPDATE saved_searches SET last_checked_at = CASE WHEN watch = 1 THEN last_checked_at "
+                "ELSE datetime('now') END, watch = 1, last_error = NULL WHERE owner = ? AND name = ?",
+                (owner, name))
+            sid = con.execute("SELECT id FROM saved_searches WHERE owner = ? AND name = ?",
+                              (owner, name)).fetchall()[0][0]
+            con.execute(
+                "INSERT INTO tg_watch_prefs(search_id, mode, expires_at) VALUES (?, ?, "
+                "CASE WHEN ? IS NULL THEN NULL ELSE datetime('now', '+' || ? || ' days') END) "
+                "ON CONFLICT(search_id) DO UPDATE SET mode = excluded.mode, expires_at = excluded.expires_at, "
+                "reminded_at = NULL, paused_until = NULL, updated_at = datetime('now')",
+                (sid, mode, expire_days, expire_days))
+    return sid, bool(old and (old[0][0] != q or old[0][1] is not None))
+
+
+_WATCH_COLS = ("id", "name", "q", "watch", "last_error", "mode", "paused_until", "expires_at", "unseen")
+
+
+def list_watches(owner: str) -> list[dict]:
+    with db() as con:
+        rows = con.execute(
+            "SELECT s.id, s.name, s.q, s.watch, s.last_error, COALESCE(p.mode, ?), "
+            "CASE WHEN p.paused_until > datetime('now') THEN p.paused_until END, p.expires_at, "
+            "(SELECT COUNT(*) FROM watch_hits w WHERE w.search_id = s.id AND w.seen = 0) "
+            "FROM saved_searches s LEFT JOIN tg_watch_prefs p ON p.search_id = s.id "
+            "WHERE s.owner = ? ORDER BY s.watch DESC, s.name COLLATE NOCASE",
+            (DEFAULT_MODE, owner)).fetchall()
+    return [dict(zip(_WATCH_COLS, r)) for r in rows]
+
+
+def get_watch(owner: str, sid: int) -> dict | None:
+    return next((w for w in list_watches(owner) if w["id"] == sid), None)
+
+
+def _prefs_upsert(con, sid: int) -> None:
+    con.execute("INSERT INTO tg_watch_prefs(search_id, mode) VALUES (?, ?) ON CONFLICT(search_id) DO NOTHING",
+                (sid, DEFAULT_MODE))
+
+
+def _owned(con, owner: str, sid: int) -> bool:
+    return bool(con.execute("SELECT 1 FROM saved_searches WHERE id = ? AND owner = ?", (sid, owner)).fetchall())
+
+
+def set_mode(owner: str, sid: int, mode: str) -> bool:
+    if mode not in MODES:
+        return False
+    with db() as con:
+        with write_tx(con):
+            if not _owned(con, owner, sid):
+                return False
+            _prefs_upsert(con, sid)
+            con.execute("UPDATE tg_watch_prefs SET mode = ?, updated_at = datetime('now') WHERE search_id = ?",
+                        (mode, sid))
+    return True
+
+
+def set_pause(owner: str, sid: int, days: int) -> bool:
+    """Pausa delle notifiche (la sentinella continua a raccogliere in Novita'). 0 = riprendi."""
+    with db() as con:
+        with write_tx(con):
+            if not _owned(con, owner, sid):
+                return False
+            _prefs_upsert(con, sid)
+            con.execute("UPDATE tg_watch_prefs SET paused_until = CASE WHEN ? = 0 THEN NULL "
+                        "ELSE datetime('now', '+' || ? || ' days') END, updated_at = datetime('now') "
+                        "WHERE search_id = ?", (days, days, sid))
+    return True
+
+
+def set_watch(owner: str, sid: int, on: bool) -> bool:
+    """Accende o spegne l'allerta, come i pulsanti di search.php."""
+    with db() as con:
+        cur = con.execute(
+            "UPDATE saved_searches SET watch = 1, last_checked_at = datetime('now'), last_error = NULL "
+            "WHERE id = ? AND owner = ? AND watch = 0" if on else
+            "UPDATE saved_searches SET watch = 0 WHERE id = ? AND owner = ?", (sid, owner))
+        return cur.rowcount > 0
+
+
+def extend_watch(owner: str, sid: int, days: int) -> bool:
+    with db() as con:
+        with write_tx(con):
+            if not _owned(con, owner, sid):
+                return False
+            _prefs_upsert(con, sid)
+            # «almeno N giorni da adesso»: un secondo tocco non aggiunge altri giorni
+            con.execute(
+                "UPDATE tg_watch_prefs SET expires_at = MAX(COALESCE(expires_at, ''), datetime('now', '+' || ? || ' days')), "
+                "reminded_at = NULL, updated_at = datetime('now') WHERE search_id = ?", (days, sid))
+            # prolungare una sentinella gia' scaduta (spenta) vuol dire riaccenderla
+            con.execute("UPDATE saved_searches SET watch = 1, last_checked_at = datetime('now'), last_error = NULL "
+                        "WHERE id = ? AND watch = 0", (sid,))
+    return True
+
+
+def delete_watch(owner: str, sid: int) -> bool:
+    """Come «Elimina» in search.php: via la ricerca, le corrispondenze e le preferenze (cascata)."""
+    with db() as con:
+        cur = con.execute("DELETE FROM saved_searches WHERE id = ? AND owner = ?", (sid, owner))
+        return cur.rowcount > 0
+
+
+def unseen(owner: str, per_search: int = 5) -> list[dict]:
+    """Segnalazioni non viste raggruppate per sentinella, le piu' recenti prima."""
+    with db() as con:
+        groups = con.execute(
+            "SELECT s.id, s.name, COUNT(*) FROM watch_hits w JOIN saved_searches s ON s.id = w.search_id "
+            "WHERE s.owner = ? AND w.seen = 0 GROUP BY s.id ORDER BY MAX(w.id) DESC", (owner,)).fetchall()
+        out = []
+        for sid, name, n in groups:
+            items = con.execute(
+                "SELECT i.id, i.title, COALESCE(f.title, f.url), i.published_at, i.fetched_at "
+                "FROM watch_hits w JOIN items i ON i.id = w.item_id JOIN feeds f ON f.id = i.feed_id "
+                "WHERE w.search_id = ? AND w.seen = 0 "
+                "ORDER BY COALESCE(i.published_at, i.fetched_at) DESC LIMIT ?", (sid, per_search)).fetchall()
+            out.append({"id": sid, "name": name, "n": n, "items": [
+                dict(zip(("id", "title", "feed", "published_at", "fetched_at"), r)) for r in items]})
+    return out
+
+
+def mark_seen(owner: str, sid: int | None = None) -> int:
+    """Stessa SQL di novita.php: solo le sentinelle dell'utente."""
+    with db() as con:
+        if sid is None:
+            cur = con.execute("UPDATE watch_hits SET seen = 1 WHERE seen = 0 AND search_id IN "
+                              "(SELECT id FROM saved_searches WHERE owner = ?)", (owner,))
+        else:
+            cur = con.execute("UPDATE watch_hits SET seen = 1 WHERE seen = 0 AND search_id = ? AND search_id IN "
+                              "(SELECT id FROM saved_searches WHERE owner = ?)", (sid, owner))
+        return cur.rowcount
+
+
+def chats_of(username: str) -> list[int]:
+    with db() as con:
+        return [r[0] for r in con.execute(
+            "SELECT l.chat_id FROM tg_links l JOIN users u ON u.username = l.username "
+            "WHERE l.username = ? AND l.revoked_at IS NULL AND l.blocked_at IS NULL AND COALESCE(u.disabled, 0) = 0",
+            (username,)).fetchall()]
+
+
+def expire_due() -> list[dict]:
+    """Spegne le sentinelle scadute. Scatta UNA volta: insieme all'allerta si
+    azzera la scadenza, cosi' se la riaccendi dal web non si rispegne."""
+    with db() as con:
+        with write_tx(con):
+            rows = con.execute(
+                "SELECT s.id, s.owner, s.name, s.watch FROM tg_watch_prefs p JOIN saved_searches s ON s.id = p.search_id "
+                "WHERE p.expires_at IS NOT NULL AND p.expires_at <= datetime('now')").fetchall()
+            for sid, *_ in rows:
+                con.execute("UPDATE saved_searches SET watch = 0 WHERE id = ?", (sid,))
+                con.execute("UPDATE tg_watch_prefs SET expires_at = NULL, reminded_at = NULL, "
+                            "updated_at = datetime('now') WHERE search_id = ?", (sid,))
+    # gia' spente a mano: si azzera la scadenza senza avvisare
+    return [{"id": a, "owner": b, "name": c} for a, b, c, w in rows if w == 1]
+
+
+def reminders_due() -> list[dict]:
+    """Sentinelle che scadono entro 24 ore e non sono ancora state ricordate.
+    Si segnano con mark_reminded() solo dopo un invio riuscito."""
+    with db() as con:
+        rows = con.execute(
+            "SELECT s.id, s.owner, s.name, p.expires_at FROM tg_watch_prefs p "
+            "JOIN saved_searches s ON s.id = p.search_id WHERE s.watch = 1 AND p.reminded_at IS NULL "
+            "AND p.expires_at IS NOT NULL AND p.expires_at <= datetime('now', '+1 day') "
+            "AND p.expires_at > datetime('now')").fetchall()
+    return [{"id": a, "owner": b, "name": c, "expires_at": d} for a, b, c, d in rows]
+
+
+def mark_reminded(sid: int) -> None:
+    """Dopo l'invio riuscito: un errore di rete non deve far perdere il promemoria."""
+    with db() as con:
+        con.execute("UPDATE tg_watch_prefs SET reminded_at = datetime('now') WHERE search_id = ?", (sid,))
+
+
+def load_suggestions(path: str | None) -> list[dict]:
+    """Sentinelle da proporre al primo collegamento, da un file fuori dal codice
+    (sono interessi personali: non devono finire nel repo pubblico).
+    Una per riga:  Nome | query FTS | istantanea|riepilogo|novita"""
+    out = []
+    if not path:
+        return out
+    word = {"istantanea": "instant", "riepilogo": "digest", "novita": "novita", "novità": "novita"}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = [x.strip() for x in line.split("|")]
+                if len(parts) == 3 and parts[0] and parts[1] and word.get(parts[2].lower()):
+                    out.append({"name": parts[0][:NAME_MAX], "q": parts[1], "mode": word[parts[2].lower()]})
+    except (OSError, UnicodeError, ValueError):     # file mancante o non UTF-8: nessuna proposta, non un crash
+        return []
+    return out[:8]
+
+
+# --------------------------------------- creazione in due passi (state.db)
+
+PEND_SCHEMA = ("CREATE TABLE IF NOT EXISTS pend (tok TEXT PRIMARY KEY, link_id INTEGER, q TEXT, orig TEXT, "
+               "name TEXT, mode TEXT, days INTEGER, created REAL)")
+PEND_TTL_S = 3600
+
+
+def pend_new(link_id: int, q: str, orig: str, name: str, mode: str, days: int | None) -> str:
+    tok = "".join(secrets.choice(CTX_ALPHABET) for _ in range(8))
+    now = _time.time()
+    with state() as s:
+        s.execute(PEND_SCHEMA)
+        s.execute("DELETE FROM pend WHERE created < ?", (now - PEND_TTL_S,))
+        s.execute("INSERT INTO pend VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (tok, link_id, q, orig, name, mode, days, now))
+    return tok
+
+
+def pend_get(tok: str, link_id: int) -> dict | None:
+    with state() as s:
+        s.execute(PEND_SCHEMA)
+        r = s.execute("SELECT q, orig, name, mode, days FROM pend WHERE tok = ? AND link_id = ? AND created >= ?",
+                      (tok, link_id, _time.time() - PEND_TTL_S)).fetchall()
+    return dict(zip(("q", "orig", "name", "mode", "days"), r[0])) if r else None
+
+
+def pend_set(tok: str, link_id: int, **kw) -> None:
+    cols = {k: v for k, v in kw.items() if k in ("mode", "days")}
+    if not cols:
+        return
+    with state() as s:
+        s.execute(f"UPDATE pend SET {', '.join(c + ' = ?' for c in cols)} WHERE tok = ? AND link_id = ?",
+                  (*cols.values(), tok, link_id))
+
+
+def pend_drop(tok: str, link_id: int) -> bool:
+    """Consuma la richiesta: un secondo «Crea» sullo stesso messaggio non fa nulla."""
+    with state() as s:
+        s.execute(PEND_SCHEMA)
+        return s.execute("DELETE FROM pend WHERE tok = ? AND link_id = ?", (tok, link_id)).rowcount > 0
