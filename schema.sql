@@ -217,3 +217,30 @@ CREATE TABLE IF NOT EXISTS watch_hits (
   UNIQUE(search_id, item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_watch_hits_unseen ON watch_hits(search_id, seen);
+
+-- Bot Telegram (bot/rssintel_bot.py). Le crea anche il bot all'avvio: sono qui
+-- per documentarle e per il ripristino. Collegamenti tra account Telegram e
+-- utenti RSSIntel: si revocano (revoked_at), non si cancellano, e spariscono con
+-- l'utente. Nel backup privato tg_user_id e chat_id vengono anonimizzati.
+CREATE TABLE IF NOT EXISTS tg_links (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  username     TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
+  tg_user_id   INTEGER NOT NULL,
+  chat_id      INTEGER NOT NULL,
+  linked_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT,
+  revoked_at   TEXT,
+  blocked_at   TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_links_active
+  ON tg_links(tg_user_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tg_links_user ON tg_links(username);
+
+-- Codici monouso per /start: si conserva solo l'impronta sha256, durata 15 minuti.
+CREATE TABLE IF NOT EXISTS tg_link_codes (
+  code_hash  TEXT PRIMARY KEY,
+  username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  used_at    TEXT
+);

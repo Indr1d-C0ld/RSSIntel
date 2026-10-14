@@ -9,6 +9,37 @@ $me = auth_user();
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 
+/** La tabella dei collegamenti la crea il bot Telegram: senza bot non c'e'. */
+function tg_links_exist(SQLite3 $db): bool {
+  return (bool)$db->querySingle("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tg_links'");
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && (string)($_POST['action'] ?? '') === 'tg_unlink') {
+  // Scollega un account Telegram: unica via di revoca dal web (l'unico
+  // amministratore non si puo' disattivare). Il bot rilegge il collegamento a
+  // ogni comando, quindi vale dal messaggio successivo.
+  if (!csrf_check()) { http_response_code(403); die('CSRF non valido'); }
+  try {
+    $dbw = db_rw();
+    if (!tg_links_exist($dbw)) throw new RuntimeException('Nessun account Telegram collegato.');
+    $st = $dbw->prepare("
+      UPDATE tg_links SET revoked_at = datetime('now')
+      WHERE id = :id AND username = :u AND revoked_at IS NULL
+    ");
+    $st->bindValue(':id', (int)($_POST['link_id'] ?? 0), SQLITE3_INTEGER);
+    $st->bindValue(':u', (string)$me['username'], SQLITE3_TEXT);
+    $st->execute();
+    $_SESSION['flash'] = $dbw->changes() > 0
+      ? ['ok', "Account Telegram scollegato: il bot non risponde piu' a quell'account."]
+      : ['err', "Collegamento non trovato o gia' revocato."];
+  } catch (Throwable $e) {
+    $_SESSION['flash'] = ['err', $e->getMessage()];
+  }
+  header('Location: profile.php');
+  exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   if (!csrf_check()) { http_response_code(403); die('CSRF non valido'); }
 
@@ -41,6 +72,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   header('Location: profile.php');
   exit;
 }
+
+$tg_links = null;   // null = bot mai avviato (tabella assente)
+try {
+  $db = db_ro();
+  if (tg_links_exist($db)) {
+    $tg_links = [];
+    $st = $db->prepare("
+      SELECT id, linked_at, last_seen_at, blocked_at FROM tg_links
+      WHERE username = :u AND revoked_at IS NULL ORDER BY id
+    ");
+    $st->bindValue(':u', (string)$me['username'], SQLITE3_TEXT);
+    $r = $st->execute();
+    while ($x = $r->fetchArray(SQLITE3_ASSOC)) $tg_links[] = $x;
+  }
+} catch (Throwable $e) {
+  $tg_links = null;
+}
 ?>
 <!doctype html>
 <meta charset="utf-8">
@@ -61,6 +109,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       utente: <?=h((string)$me['username'])?> · ruolo: <?=h((string)$me['role'])?>
     </div>
   </div>
+
+  <?php if ($tg_links !== null): ?>
+  <div class="card">
+    <b>Telegram</b>
+    <?php if (!$tg_links): ?>
+      <div class="meta" style="margin-top:6px">Nessun account Telegram collegato.</div>
+      <?php if (is_admin()): ?>
+        <div class="meta" style="margin-top:6px">
+          Per collegarne uno genera un codice monouso sul server:
+          <code>sudo -u rssintel-bot env RSSINTEL_DB=… /opt/rssintel-bot/venv/bin/python
+          /opt/rssintel-bot/rssintel_bot.py codice <?=h((string)$me['username'])?></code>,
+          poi invialo al bot con <code>/start CODICE</code> (vale 15 minuti).
+        </div>
+      <?php endif; ?>
+    <?php else: ?>
+      <?php foreach ($tg_links as $l): ?>
+        <div class="row" style="justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px">
+          <div class="meta">
+            collegato il <?=h(fmt_dt((string)$l['linked_at']))?>
+            · ultimo uso <?=h($l['last_seen_at'] ? fmt_dt((string)$l['last_seen_at']) : '—')?>
+            <?php if (!empty($l['blocked_at'])): ?> · <b>bot bloccato dall'utente</b><?php endif; ?>
+          </div>
+          <form method="post">
+            <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+            <input type="hidden" name="action" value="tg_unlink">
+            <input type="hidden" name="link_id" value="<?= (int)$l['id'] ?>">
+            <button class="btn" type="submit">Scollega Telegram</button>
+          </form>
+        </div>
+      <?php endforeach; ?>
+      <div class="meta" style="margin-top:8px">
+        Scollegando, il bot smette subito di rispondere a quell'account. Per
+        ricollegarlo serve un codice nuovo.
+      </div>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
 
   <div class="card">
     <b>Cambia password</b>

@@ -1,5 +1,68 @@
 # Changelog
 
+## 2026-10-14 — Bot Telegram, primo lotto: identita' e accesso
+
+Primo lotto del bot Telegram, che porta RSSIntel sul telefono senza passare dal
+portale. Questa versione collega l'account e mette in piedi le difese; ricerca,
+schede degli articoli, allerte con notifiche e bollettino arrivano nei lotti
+successivi.
+
+- `bot/rssintel_bot.py`, `bot/rssintel_core.py`: nuovo servizio Python
+  (python-telegram-bot 22.8, long polling, nessuna porta in ingresso).
+  - **Collegamento**: codice monouso generato da riga di comando
+    (`rssintel_bot.py codice <utente>`), valido 15 minuti, una sola volta,
+    conservato solo come impronta sha256. Dopo 5 codici sbagliati in 15 minuti
+    i tentativi vengono rifiutati.
+  - **Accesso**: lista bianca di ID Telegram controllata prima di qualunque
+    accesso al DB. Utente, ruolo e disattivazione si rileggono a ogni comando e
+    a ogni bottone; i dati dei bottoni non sono fidati.
+  - **Gruppi**: solo chat private; se aggiunto a un gruppo, il bot esce.
+  - **Comandi**: `/start`, `/aiuto`, `/stato`, `/esci` (con conferma). Il menu
+    completo dei comandi compare solo nelle chat collegate.
+  - **Token**:
+    - arriva come credenziale systemd, mai dall'ambiente;
+    - la libreria lo scrive in chiaro nel testo di `InvalidToken`, quindi il
+      mascheramento si applica al testo finale di ogni riga di log, tracce
+      comprese, e alle eccezioni non intercettate;
+    - un token rifiutato all'avvio o revocato a bot avviato (controllo ogni 5
+      minuti) fa uscire con codice 78, che la unit non riavvia.
+  - **Rete**: all'avvio il bot ritenta senza limite; un server riavviato con
+    la rete lenta non finisce in «failed».
+  - **Database**:
+    - una connessione per operazione, in `mode=rw`: un percorso sbagliato da'
+      errore invece di creare un DB vuoto;
+    - nessuna transazione di lettura lasciata aperta;
+    - tabelle proprie `tg_links` e `tg_link_codes`;
+    - lo stato interno (contatori d'uso) sta nella StateDirectory, non nel DB
+      condiviso.
+  - **Log**: solo nomi dei comandi e tempi, mai testo dei messaggi, query o ID.
+  - **Controlli all'avvio**: permessi del DB (2775/664, niente sticky bit);
+    percorsi che la sandbox deve nascondere; cartelle in sola lettura; DB
+    scrivibile. L'esito sta nel journal e in `/stato`.
+- `webapp/profile.php`: riquadro «Telegram» con gli account collegati e il
+  pulsante **Scollega Telegram** (POST con CSRF, limitato al proprio
+  utente). E' l'unica via di revoca dal web: l'ultimo amministratore non si puo'
+  disattivare.
+- `schema.sql`: `tg_links` e `tg_link_codes`, con lo stesso DDL che crea il bot
+  (verificato).
+- `bot/tests/`: un finto server della Bot API (`fake_tg.py`) e il collaudo
+  (`test_l1.py`), che fa girare il bot vero contro una copia del DB: 41
+  controlli. Coprono lista bianca, codici (sbagliato, riusato, scaduto),
+  revoca dal portale, utente disattivato, bottoni falsificati, gruppi, token
+  rifiutato all'avvio e revocato a bot avviato, rete assente, credenziali
+  mancanti, DB sbagliato, assenza di token, codici e ID nei log.
+- `deploy/rssintel-bot.service.sample`: generata dalla unit reale dallo script di
+  sincronizzazione, non mantenuta a mano.
+  - Credenziali con `LoadCredentialEncrypted`.
+  - Sandbox stretta: `ProtectSystem=strict`, sola cartella del DB scrivibile,
+    testi e catture in sola lettura (esposizione 1.3 per `systemd-analyze security`).
+  - Al massimo 5 avvii falliti in un'ora, poi «failed».
+  - Memoria e disco limitati.
+- `README.md`: sezione «Bot Telegram». Spiega perche' la cartella del DB va in
+  2775 senza sticky bit: con `fs.protected_regular=2`, predefinito su Debian, il
+  server web non potrebbe aprire i `-wal`/`-shm` creati dal bot.
+- `.gitignore`: `.env*` e `*.cred`, perche' i segreti non entrino mai nel repo.
+
 ## 2026-10-08 (3) — Eliminare un feed ora ripulisce anche indice e testi
 
 Emerso con il primo sfoltimento reale delle fonti (4 feed eliminati, ~2.050

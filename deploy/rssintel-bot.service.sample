@@ -1,0 +1,66 @@
+[Unit]
+Description=RSSIntel - bot Telegram
+Documentation=file:///opt/rssintel-bot/rssintel_bot.py
+After=network-online.target
+Wants=network-online.target
+# un crash continuo non deve girare in ciclo per sempre: 5 avvii falliti in un'ora
+# (con le attese crescenti sotto: ~6 minuti) e la unit va in failed, cosi' scatta
+# l'avviso OnFailure. Il codice 78 (token/credenziali/DB sbagliato) ci va subito.
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=rssintel-bot
+Group=www-data
+Environment=RSSINTEL_DB=/var/lib/rssintel/rssintel.db PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+# segreti come credenziali systemd, mai in Environment= (visibile da /proc e D-Bus)
+LoadCredentialEncrypted=bot_token:/etc/credstore.encrypted/rssintel-bot.token
+LoadCredential=allowed_ids:/etc/credstore/rssintel-bot.allowed
+ExecStart=/opt/rssintel-bot/venv/bin/python /opt/rssintel-bot/rssintel_bot.py
+# 78 = token rifiutato o credenziali mancanti: non riavviare, serve un intervento
+RestartPreventExitStatus=78
+Restart=always
+RestartSec=10
+RestartSteps=6
+RestartMaxDelaySec=15min
+StateDirectory=rssintel-bot
+StateDirectoryMode=0700
+UMask=0077
+
+# --- sandbox ---
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rssintel
+ReadOnlyPaths=-/var/lib/rssintel/text -/var/lib/rssintel/captures -/var/lib/rssintel/raw -/var/lib/rssintel/logs
+Environment=RSSINTEL_BOT_READONLY=/var/lib/rssintel/text:/var/lib/rssintel/captures
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+# --- risorse: il collo di bottiglia del server e' il disco ---
+MemoryMax=256M
+TasksMax=32
+Nice=10
+IOWeight=50
+
+[Install]
+WantedBy=multi-user.target

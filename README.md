@@ -25,6 +25,7 @@ worker. Nessun framework, nessun database server, nessuna build.
 | `fetcher/rssintel_watch.py` | allerte: riesegue le ricerche salvate sui nuovi articoli dopo ogni raccolta |
 | `fetcher/rssintel_capture.py`, `cdp.py`, `shot.py` | catture visive via Chromium headless |
 | `fetcher/rssintel_rebuild_fts.py` | ricostruzione integrale dell'indice FTS dai testi estratti |
+| `bot/rssintel_bot.py`, `rssintel_core.py` | bot Telegram (in costruzione a lotti, vedi sotto) |
 | `schema.sql` | schema completo del database SQLite |
 | `deploy/` | `.htaccess`, header di sicurezza, unit `systemd`, migrazioni |
 | `config.sample.php` | modello di configurazione |
@@ -41,6 +42,7 @@ worker. Nessun framework, nessun database server, nessuna build.
 - `captures` — catture visive (i file stanno fuori dalla webroot)
 - `access_log` / `login_attempts` / `ip_geo_cache` — log accessi e tentativi di login
 - `site_settings` — impostazioni globali (tema)
+- `tg_links` / `tg_link_codes` — account Telegram collegati e codici di collegamento (le crea il bot)
 
 ## Installazione
 
@@ -129,6 +131,58 @@ da un admin.
   l'autenticazione.
 
 Requisiti: `chromium` e Pillow nel Python che esegue il worker.
+
+## Bot Telegram
+
+`bot/rssintel_bot.py` porta RSSIntel sul telefono senza passare dal portale:
+un servizio Python separato (`python-telegram-bot` 22.8, long polling, nessuna
+porta in ingresso) che legge e scrive lo stesso database. Lo si costruisce a
+lotti: questa versione (L1) collega l'account e risponde a `/stato`, `/aiuto`,
+`/esci`; ricerca, schede degli articoli, allerte con notifiche e bollettino
+arrivano nei lotti successivi.
+
+- **Segreti.** Token e ID Telegram autorizzati arrivano come credenziali
+  `systemd` (`LoadCredentialEncrypted=`, `LoadCredential=`), mai da variabili
+  d'ambiente né da `config.php`. La libreria scrive il token in chiaro nel
+  messaggio d'errore quando Telegram lo rifiuta: il bot lo maschera sul testo
+  finale di ogni riga di log, tracce comprese, ed esce con codice 78, che la unit
+  non riavvia.
+- **Accesso.** Solo gli ID in lista bianca ricevono risposta; gli altri non
+  causano nemmeno un accesso al database. L'account si collega a un utente
+  RSSIntel con un codice monouso (15 minuti, conservato solo come impronta);
+  utente, ruolo e disattivazione si rileggono dal database a ogni comando. Solo
+  chat private: aggiunto a un gruppo, il bot esce. Ogni utente può scollegare il
+  proprio account dal Profilo.
+- **Database condiviso.** Il bot gira con un utente proprio nel gruppo del
+  server web. La cartella del database deve essere **setgid e scrivibile dal
+  gruppo (2775)** e il database 664, così chi apre per primo crea `-wal`/`-shm`
+  utilizzabili da tutti. **Niente sticky bit**: con `fs.protected_regular=2`
+  (predefinito su Debian) il kernel impedirebbe al server web di aprire i file
+  creati dal bot, e il database gli diventerebbe di sola lettura. Connessione
+  per operazione, nessuna transazione di lettura lasciata aperta.
+
+```bash
+useradd --system --gid www-data --home-dir /nonexistent --no-create-home \
+        --shell /usr/sbin/nologin rssintel-bot
+chmod 2775 /var/lib/rssintel && chmod 664 /var/lib/rssintel/rssintel.db
+install -d -o root -g root -m 755 /opt/rssintel-bot      # codice di root: non modificabile dal server web
+install -m 644 bot/rssintel_bot.py bot/rssintel_core.py bot/requirements.txt /opt/rssintel-bot/
+python3 -m venv /opt/rssintel-bot/venv
+/opt/rssintel-bot/venv/bin/pip install --require-hashes -r /opt/rssintel-bot/requirements.txt
+systemd-ask-password -n "Token:" | \
+  systemd-creds encrypt --with-key=host --name=bot_token - /etc/credstore.encrypted/rssintel-bot.token
+(umask 077; echo "<ID Telegram>" > /etc/credstore/rssintel-bot.allowed)
+cp deploy/rssintel-bot.service.sample /etc/systemd/system/rssintel-bot.service
+systemctl daemon-reload && systemctl enable --now rssintel-bot
+# collegamento: codice monouso, poi /start CODICE al bot
+sudo -u rssintel-bot env RSSINTEL_DB=/var/lib/rssintel/rssintel.db \
+  /opt/rssintel-bot/venv/bin/python /opt/rssintel-bot/rssintel_bot.py codice <utente>
+```
+
+La unit di esempio è blindata (`ProtectSystem=strict`, solo la cartella del
+database scrivibile, testi e catture in sola lettura). Il gruppo del server web
+può leggere anche file di altri siti: elencali in un'estensione della unit
+(`InaccessiblePaths=`) e in `RSSINTEL_BOT_HIDDEN`, che il bot verifica all'avvio.
 
 ## Configurazione (`config.php`)
 
