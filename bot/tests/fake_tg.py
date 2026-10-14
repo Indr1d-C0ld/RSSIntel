@@ -23,6 +23,8 @@ class State:
         self.next_id = 1
         self.calls = []
         self.msg_id = 1000
+        self.forbidden = set()      # chat che hanno bloccato il bot
+        self.faults = []            # [(metodo, codice, retry_after)] da restituire alle prossime chiamate
 
 
 def make_handler(st: State):
@@ -77,6 +79,15 @@ def make_handler(st: State):
             self._send(404, {})
 
         def do_POST(self):
+            if self.path == "/_forbid":          # {"chat_id": n, "on": true|false}
+                p = self._params()
+                (st.forbidden.add if p.get("on", True) else st.forbidden.discard)(int(p["chat_id"]))
+                return self._send(200, {"ok": True})
+            if self.path == "/_fault":           # {"method": "sendMessage", "code": 429|502, "retry_after": 2}
+                p = self._params()
+                with st.lock:
+                    st.faults.append((p["method"], int(p["code"]), int(p.get("retry_after", 1))))
+                return self._send(200, {"ok": True})
             if self.path == "/_revoke":          # revoca il token a bot avviato
                 st.revoked = True
                 return self._send(200, {"ok": True})
@@ -95,6 +106,21 @@ def make_handler(st: State):
             p = self._params()
             if token == BAD_TOKEN or getattr(st, "revoked", False):
                 return self._send(401, {"ok": False, "error_code": 401, "description": "Unauthorized"})
+            with st.lock:
+                fault = next((f for f in st.faults if f[0] == method), None)
+                if fault:
+                    st.faults.remove(fault)
+            if fault:
+                with st.lock:
+                    st.calls.append([method + "!" + str(fault[1]), p])
+                if fault[1] == 429:
+                    return self._send(429, {"ok": False, "error_code": 429, "description": "Too Many Requests: retry after "
+                                            + str(fault[2]), "parameters": {"retry_after": fault[2]}})
+                return self._send(fault[1], {"ok": False, "error_code": fault[1], "description": "Bad Gateway"})
+            if method == "sendMessage" and int(p.get("chat_id", 0) or 0) in st.forbidden:
+                with st.lock:
+                    st.calls.append([method + "!403", p])
+                return self._send(403, {"ok": False, "error_code": 403, "description": "Forbidden: bot was blocked by the user"})
             if method != "getUpdates":
                 with st.lock:
                     st.calls.append([method, p])

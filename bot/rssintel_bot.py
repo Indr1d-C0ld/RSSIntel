@@ -46,17 +46,19 @@ import threading
 import time
 import traceback
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rssintel_core as core  # noqa: E402
 
-VERSION = "L3"
+VERSION = "L4"
 EXIT_CONFIG = 78                    # EX_CONFIG: la unit non riavvia
 TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{30,}")
 RATE_PER_MIN = int(os.environ.get("RSSINTEL_BOT_RATE_PER_MIN", "30"))   # comandi e bottoni al minuto
 WATCHDOG_EVERY = float(os.environ.get("RSSINTEL_BOT_WATCHDOG_S", "300"))   # controllo del token
 WATCH_JOBS_EVERY = float(os.environ.get("RSSINTEL_BOT_WATCH_JOBS_S", "600"))   # scadenze delle sentinelle
+PUSH_EVERY = float(os.environ.get("RSSINTEL_BOT_PUSH_S", "30"))                # coda delle notifiche
 LINK_FAILS_MAX = 5                  # tentativi di codice sbagliati ...
 LINK_FAILS_WINDOW = 15 * 60         # ... in 15 minuti
 
@@ -93,6 +95,9 @@ def setup_logging() -> None:
     # httpx/httpcore registrano ogni URL, che contiene il token
     for name in ("httpx", "httpcore", "apscheduler", "telegram.ext.Updater"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    # «job skipped: maximum number of running instances»: un giro delle notifiche
+    # ancora in corso fa saltare il successivo, ed e' voluto
+    logging.getLogger("apscheduler.scheduler").setLevel(logging.ERROR)
 
     def hook(t, v, tb):
         sys.stderr.write(redact("".join(traceback.format_exception(t, v, tb))))
@@ -171,7 +176,7 @@ def run_bot() -> int:
     from telegram import (BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CopyTextButton,
                           InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update)
     from telegram.constants import ChatAction, ChatMemberStatus, ChatType, ParseMode
-    from telegram.error import BadRequest, Forbidden, InvalidToken, TelegramError
+    from telegram.error import BadRequest, Forbidden, InvalidToken, NetworkError, RetryAfter, TelegramError
     from telegram.ext import (Application, CallbackQueryHandler, ChatMemberHandler,
                               CommandHandler, ContextTypes, Defaults, MessageHandler, filters)
 
@@ -321,7 +326,10 @@ def run_bot() -> int:
                     "Sono le stesse ricerche salvate del portale.\n\n"
                     "/stato — ultimo giro di raccolta e stato del bot\n"
                     "/esci — scollega questo account\n\n"
-                    "<i>In arrivo: notifiche automatiche delle sentinelle, bollettino del giorno.</i>")
+                    "<b>Notifiche</b>: ⚡ istantanee dopo ogni giro di raccolta (al massimo un suono all'ora, "
+                    "le altre silenziose), 📅 riepiloghi alle 8, alle 13 e alle 19, niente invii dalle 2 alle 8. "
+                    "Da /allerte, per ogni sentinella, «solo conteggi» se non vuoi titoli in chat.\n\n"
+                    "<i>In arrivo: il bollettino del giorno.</i>")
 
     @guarded("stato")
     async def cmd_stato(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
@@ -333,6 +341,9 @@ def run_bot() -> int:
             f"Fonti attive: {s['feeds']}" + (f" ({s['feeds_err']} con errore)" if s["feeds_err"] else ""),
             f"Articoli nelle ultime 24 ore: {s['items_24h']}",
             f"Sentinelle attive: {s['watches']}",
+            "Notifiche: " + (lambda o: f"{o['pending']} in coda" + (f", ⚠️ {o['failed']} non consegnate" if o["failed"] else "")
+                             + (f", ultima inviata {core.fmt_dt(datetime.fromtimestamp(o['last_sent'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))}"
+                                if o["last_sent"] else ""))(core.outbox_stats()),
             f"Bot: versione {VERSION}, attivo da {up // 3600} h {up % 3600 // 60} min",
         ]
         if link["role"] == "admin":
@@ -593,11 +604,11 @@ def run_bot() -> int:
     RE_SW = re.compile(r"^sw:([a-z2-9]{8})$")
     RE_G = re.compile(r"^g:(\d)$")
     RE_A = re.compile(r"^(al|a:\d{1,9}|am:\d{1,9}:[idn]|ap:\d{1,9}:(?:0|1|7)|aw:\d{1,9}:[01]|"
-                      r"ae:\d{1,9}:7|ad:\d{1,9}|ay:\d{1,9})$")
+                      r"ae:\d{1,9}:7|ad:\d{1,9}|ay:\d{1,9}|at:\d{1,9}:[tc])$")
     RE_N = re.compile(r"^(nva|nv:\d{1,9})$")
     SUGGEST = core.load_suggestions(os.environ.get("RSSINTEL_BOT_SUGGEST_FILE"))
-    NOTIFY_NOTE = ("<i>Le notifiche automatiche arrivano con il prossimo aggiornamento del bot; "
-                   "intanto le segnalazioni sono in /novita e nella pagina Novità del portale.</i>")
+    NOTIFY_NOTE = ("<i>⚡ dopo ogni giro di raccolta · 📅 alle 8, 13 e 19 · 📥 solo in /novita e nel portale. "
+                   "Dalle 2 alle 8 niente invii.</i>")
 
     def fmt_rate(x: float) -> str:
         return f"{x:.1f}".replace(".", ",")
@@ -769,6 +780,9 @@ def run_bot() -> int:
         rows = [[InlineKeyboardButton(("✓ " if w["mode"] == m else "") + core.MODES[m], callback_data=f"am:{sid}:{c}")
                  for c, m in list(core.MODE_CODE.items())[:2]],
                 [InlineKeyboardButton(("✓ " if w["mode"] == "novita" else "") + core.MODES["novita"], callback_data=f"am:{sid}:n")]]
+        det = w.get("detail") or "titles"
+        rows.append([InlineKeyboardButton(("✓ " if det == "titles" else "") + "👁 Titoli in chat", callback_data=f"at:{sid}:t"),
+                     InlineKeyboardButton(("✓ " if det == "counts" else "") + "🔒 Solo conteggi", callback_data=f"at:{sid}:c")])
         if w["paused_until"]:
             rows.append([InlineKeyboardButton("▶ Riprendi le notifiche", callback_data=f"ap:{sid}:0")])
         else:
@@ -802,6 +816,11 @@ def run_bot() -> int:
         if verb == "am":
             await asyncio.to_thread(core.set_mode, owner, sid, core.MODE_CODE[parts[2]])
             return await show_watch(update, link, sid)
+        if verb == "at":
+            await asyncio.to_thread(core.set_detail, owner, sid, "titles" if parts[2] == "t" else "counts")
+            return await show_watch(update, link, sid, "" if parts[2] == "t" else
+                                    "<i>Le notifiche di questa sentinella diranno solo quante segnalazioni ci sono, "
+                                    "senza nome né titoli: Telegram vedrà solo i numeri.</i>")
         if verb == "ap":
             await asyncio.to_thread(core.set_pause, owner, sid, int(parts[2]))
             return await show_watch(update, link, sid)
@@ -900,6 +919,155 @@ def run_bot() -> int:
         except Exception as e:
             log.warning("controllo scadenze non riuscito: %s", type(e).__name__)
 
+    # ------------------------------------------------------- notifiche (L4)
+
+    RE_VB = re.compile(r"^(vb:\d{1,10}|nvl)$")
+    PUSH_CFG = core.push_config()
+
+    def render_batch(b: dict) -> tuple[str, InlineKeyboardMarkup]:
+        rows = b["rows"]
+        n = len(rows)
+        named = [r for r in rows if r["detail"] != "counts"]
+        hidden = n - len(named)
+        per = {}
+        for r in named:
+            per[r["name"]] = per.get(r["name"], 0) + 1
+        head = f"🔔 <b>{n} nuov{'a' if n == 1 else 'e'}</b>"
+        if per:
+            head += " · " + " · ".join(f"{esc(k)} ({v})" for k, v in per.items())
+        if hidden:
+            head += f" · {hidden} da sentinell{'a' if hidden == 1 else 'e'} riservat{'a' if hidden == 1 else 'e'}"
+        lines = (["↻ <i>reinvio</i>"] if b["resend"] else []) + [head]
+        items = []
+        if n > core.BACKLOG_MAX:
+            lines.append(f"\nTroppe per elencarle qui: le trovi tutte in /novita.")
+        else:
+            for k, r in enumerate(named[:core.MAX_LINES], 1):
+                items.append(r["item_id"])
+                lines.append(f"<b>{k}.</b> {esc(core.clean_title(r['title']) or '(senza titolo)')} "
+                             f"<i>· {esc(r['feed'] or '')} · {core.fmt_dt(r['when'])}</i>")
+            if len(named) > core.MAX_LINES:
+                lines.append(f"<i>… e altre {len(named) - core.MAX_LINES} → /novita</i>")
+        btn = [InlineKeyboardButton(f"📄{k}", callback_data=f"i:{iid}") for k, iid in enumerate(items[:5], 1)]
+        kb = ([btn] if btn else []) + [[InlineKeyboardButton(f"✓ Viste ({n})", callback_data=f"vb:{b['batch']}"),
+                                        InlineKeyboardButton("🔔 Novità", callback_data="nvl")]]
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3990].rsplit("\n", 1)[0] + "\n…"
+        return text, InlineKeyboardMarkup(kb)
+
+    async def send_batch(bot, b: dict) -> None:
+        try:
+            await _send_batch(bot, b)
+        except Exception as e:                       # qualunque altro guaio: la riga non resta «in invio»
+            log.warning("notifica non consegnata: %s", type(e).__name__)
+            try:
+                await asyncio.to_thread(core.batch_done, b["batch"], False)
+            except Exception:
+                pass                                 # ci pensera' il recupero delle righe ferme
+
+    async def _send_batch(bot, b: dict) -> None:
+        text, kb = render_batch(b)
+        # di notte sempre silenziose, anche se un ritentativo le ha fatte slittare nelle ore di quiete
+        night = core._in_quiet(datetime.now(core.TZ), PUSH_CFG["quiet"])
+        audible = b["audible_wanted"] and not night and await asyncio.to_thread(core.sound_allowed, b["link_id"], PUSH_CFG)
+        try:
+            try:
+                await bot.send_message(b["chat_id"], text, reply_markup=kb, disable_notification=not audible)
+            except BadRequest as e:
+                if "parse" not in str(e).lower():
+                    raise
+                # HTML rifiutato: si rimanda una volta come testo semplice
+                await bot.send_message(b["chat_id"], re.sub(r"<[^>]+>", "", html.unescape(text)),
+                                       parse_mode=None, reply_markup=kb, disable_notification=not audible)
+        except RetryAfter as e:
+            ra = e.retry_after
+            await asyncio.to_thread(core.retry_later, b["batch"], (ra.total_seconds() if hasattr(ra, "total_seconds") else float(ra)) + 1)
+            return
+        except Forbidden:
+            log.info("notifica non consegnata: bot bloccato dall'utente")
+            await asyncio.to_thread(core.set_blocked, b["chat_id"], True)
+            await asyncio.to_thread(core.drop_link, b["link_id"])
+            await asyncio.to_thread(core.batch_done, b["batch"], False, None, "forbidden")
+            return
+        except BadRequest as e:                     # permanente (chat inesistente...): pochi tentativi
+            log.warning("notifica rifiutata da Telegram: %s", type(e).__name__)
+            await asyncio.to_thread(core.batch_done, b["batch"], False, None, "badrequest")
+            return
+        except NetworkError as e:                   # TimedOut compreso: si riprova con attese crescenti
+            log.warning("notifica non consegnata, riprovo: %s", type(e).__name__)
+            await asyncio.to_thread(core.batch_done, b["batch"], False)
+            return
+        if audible:
+            await asyncio.to_thread(core.sound_used, b["link_id"])
+        await asyncio.to_thread(core.batch_done, b["batch"], True)
+        log.info("notifica inviata: %d segnalazioni%s", len(b["rows"]), "" if audible else " (silenziosa)")
+
+    push_lock = asyncio.Lock()
+
+    async def push_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+        if push_lock.locked():
+            return                                   # il giro precedente non e' finito
+        async with push_lock:
+            try:
+                await asyncio.to_thread(core.recover_sending, core.STALE_SENDING_S)
+                await asyncio.to_thread(core.enqueue, PUSH_CFG)
+                for link_id in await asyncio.to_thread(core.due_links):
+                    try:                               # un collegamento difettoso non ferma gli altri
+                        b = await asyncio.to_thread(core.take_batch, link_id)
+                    except Exception as e:
+                        log.warning("coda di un collegamento non letta: %s", type(e).__name__)
+                        continue
+                    if b:
+                        await send_batch(context.bot, b)
+                        await asyncio.sleep(1.1)       # mai piu' di un messaggio al secondo
+                await asyncio.to_thread(core.kv_set, "heartbeat", time.time())
+            except Exception as e:
+                where = ""
+                if e.__traceback__ is not None:
+                    fr = traceback.extract_tb(e.__traceback__)[-1]
+                    where = f" in {os.path.basename(fr.filename)}:{fr.lineno}"
+                log.warning("giro delle notifiche non riuscito: %s%s", type(e).__name__, where)
+
+    async def noisy_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Una volta per sentinella: troppo rumorosa in istantanea, propone il riepilogo."""
+        try:
+            for r in await asyncio.to_thread(core.noisy_instant):
+                key = f"noisy:{r['id']}"
+                if await asyncio.to_thread(core.kv_get, key):
+                    continue
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("📅 Passa al riepilogo", callback_data=f"am:{r['id']}:d")]])
+                for chat in await asyncio.to_thread(core.chats_of, r["owner"]):
+                    try:
+                        await context.bot.send_message(chat, f"La sentinella <b>{esc(r['name'])}</b> ha trovato più di 5 "
+                                                             "articoli al giorno negli ultimi due giorni. Passarla al "
+                                                             "riepilogo (8, 13, 19)?", reply_markup=kb, disable_notification=True)
+                    except TelegramError:
+                        pass
+                await asyncio.to_thread(core.kv_set, key, time.time())
+        except Exception as e:
+            log.warning("controllo delle sentinelle rumorose non riuscito: %s", type(e).__name__)
+
+    @guarded("notifica_viste")
+    async def cb_vb(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
+        data = update.callback_query.data
+        if data == "nvl":
+            return await show_novita(update, link, edit=False)
+        hits = await asyncio.to_thread(core.batch_hits, int(data[3:]), link["link_id"])
+        n = await asyncio.to_thread(core.mark_hits_seen, link["username"], hits)
+        try:
+            await update.callback_query.answer(f"{n} segnate come viste" if n else "Già viste")
+        except TelegramError:
+            pass
+        kb = update.callback_query.message.reply_markup if update.callback_query.message else None
+        if kb:                                         # il bottone diventa «✓ viste»
+            rows = [[InlineKeyboardButton("✓ viste", callback_data="-") if (b.callback_data or "").startswith("vb:") else b
+                     for b in row] for row in kb.inline_keyboard]
+            try:
+                await update.callback_query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+            except BadRequest:
+                pass
+
     @guarded("sconosciuto")
     async def on_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE, link):
         await reply(update, "Comando sconosciuto. /aiuto")
@@ -966,6 +1134,12 @@ def run_bot() -> int:
                                     name="token_watchdog")
         app.job_queue.run_repeating(watch_jobs, interval=WATCH_JOBS_EVERY, first=min(30.0, WATCH_JOBS_EVERY),
                                     name="watch_jobs")
+        n = await asyncio.to_thread(core.recover_sending)
+        if n:
+            log.info("notifiche rimaste a meta' invio rimesse in coda: %d", n)
+        app.job_queue.run_repeating(push_job, interval=PUSH_EVERY, first=min(10.0, PUSH_EVERY), name="push")
+        noisy_every = float(os.environ.get("RSSINTEL_BOT_NOISY_S", "3600"))
+        app.job_queue.run_repeating(noisy_job, interval=noisy_every, first=min(600.0, noisy_every), name="noisy")
 
     async def token_watchdog(context: ContextTypes.DEFAULT_TYPE) -> None:
         # Un token revocato a bot avviato non arriva a run_polling: la libreria
@@ -1010,6 +1184,7 @@ def run_bot() -> int:
     app.add_handler(CallbackQueryHandler(cb_w, pattern=RE_W))
     app.add_handler(CallbackQueryHandler(cb_a, pattern=RE_A))
     app.add_handler(CallbackQueryHandler(cb_n, pattern=RE_N))
+    app.add_handler(CallbackQueryHandler(cb_vb, pattern=RE_VB))
     app.add_handler(CallbackQueryHandler(cb_noop))           # "-" e qualunque dato non riconosciuto
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & private, on_text))
     app.add_handler(MessageHandler(filters.COMMAND & private, on_unknown))

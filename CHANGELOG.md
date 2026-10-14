@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-10-15 (4) — Bot Telegram, lotto L4: notifiche
+
+- `bot/rssintel_core.py` — notifiche.
+  - La coda (`outbox`) sta nel database di stato del bot, non in quello
+    condiviso: i titoli inviati non finiscono in `rssintel.db` ne' nei backup,
+    e per le notifiche `rssintel.db` si legge soltanto.
+  - Un segnaposto sull'ultimo id di `watch_hits` basta a non perdere e non
+    ripetere segnalazioni, perche' le scrive solo il worker, una transazione
+    alla volta. Al primo avvio parte da adesso (niente storico).
+  - Quando inviare:
+    - ⚡ istantanea: al giro di raccolta successivo;
+    - 📅 riepilogo: al prossimo orario (08:00, 13:00, 19:00);
+    - quiete 02:00-08:00: cio' che cade dentro passa alle 8, silenzioso;
+    - finestre a cavallo della mezzanotte e cambio dell'ora legale
+      verificati.
+  - Prima dell'invio si riscartano le segnalazioni gia' viste sul web,
+    eliminate, di sentinelle spente, in pausa o passate a «solo Novita'», e
+    quelle di account scollegati, bloccati o disattivati.
+  - Consegna «almeno una volta»:
+    - una riga rimasta a meta' invio torna in coda (all'avvio, o dopo 10
+      minuti), marcata «↻ reinvio»;
+    - errori temporanei: attese crescenti fino a 30 minuti, fino a 24 ore
+      dall'orario previsto;
+    - errori permanenti: 3 tentativi;
+    - bot bloccato: niente reinvii a vuoto.
+  - Tetto ai suoni: 1 all'ora e 8 al giorno; le altre notifiche arrivano
+    silenziose.
+  - Per ogni sentinella, «solo conteggi»: niente nome ne' titoli in chat.
+- `bot/rssintel_bot.py` (versione L4):
+  - un giro ogni 30 s accoda e invia un messaggio per collegamento: al
+    massimo 15 righe, oltre 25 un riepilogo unico, bottoni 📄, «✓ Viste» (che
+    vale anche dopo un reinvio) e «Novità»;
+  - gestione di 429, 403, 400 e degli errori di rete;
+  - un collegamento difettoso non ferma gli altri;
+  - una sentinella istantanea con piu' di 5 segnalazioni al giorno per due
+    giorni riceve una volta la proposta di passare al riepilogo;
+  - `/stato` mostra la coda;
+  - nella scheda della sentinella c'e' «Titoli in chat / Solo conteggi».
+- `bot/tests/test_l4.py`: 32 controlli. Coprono:
+  - istantanea, tetto ai suoni e «✓ Viste»;
+  - riepilogo, solo Novita', pausa e riservata;
+  - gia' vista sul web;
+  - backlog;
+  - 429, 502, 400 e bot bloccato;
+  - crash a meta' invio;
+  - quiete;
+  - sentinella rumorosa;
+  - sentinella spenta e account scollegato con notifiche in coda.
+
+  `fake_tg.py` simula ora i blocchi e i guasti di Telegram.
+
 ## 2026-10-15 (3) — Esempi neutri nel bot e nei test
 
 - `bot/rssintel_bot.py` (testo di `/aiuto` e di `/segui`) e `bot/tests/test_l2.py`, `test_l3.py`:

@@ -137,9 +137,8 @@ Requisiti: `chromium` e Pillow nel Python che esegue il worker.
 `bot/rssintel_bot.py` porta RSSIntel sul telefono senza passare dal portale:
 un servizio Python separato (`python-telegram-bot` 22.8, long polling, nessuna
 porta in ingresso) che legge e scrive lo stesso database. Lo si costruisce a
-lotti; questa versione (L3) collega l'account, cerca, fa leggere e gestisce le
-sentinelle. Le notifiche automatiche e il bollettino arrivano nei lotti
-successivi.
+lotti; questa versione (L4) collega l'account, cerca, fa leggere, gestisce le
+sentinelle e ne manda le notifiche. Il bollettino arriva nel lotto successivo.
 
 - **Ricerca.** Si scrive una parola, oppure `/cerca`.
   - I risultati sono **gli stessi di `search.php`**: stessa query FTS, stesso
@@ -166,6 +165,17 @@ successivi.
   - Le sentinelle da proporre al primo collegamento si leggono da un file
     indicato da `RSSINTEL_BOT_SUGGEST_FILE`, una per riga:
     `Nome | query | istantanea|riepilogo|novita`.
+- **Notifiche.**
+  - ⚡ Istantanee: un messaggio per giro di raccolta. Al massimo un suono
+    all'ora e otto al giorno; le altre arrivano silenziose.
+  - 📅 Riepiloghi silenziosi agli orari di `RSSINTEL_BOT_DIGEST_AT` (predefiniti
+    08:00, 13:00, 19:00).
+  - Niente invii nelle ore di `RSSINTEL_BOT_QUIET` (02:00-08:00).
+  - Cio' che e' gia' stato visto sul portale non viene mandato.
+  - La coda sta nel database di stato del bot, non in quello condiviso; la
+    consegna e' «almeno una volta», con i reinvii marcati.
+  - Per ogni sentinella si puo' scegliere «solo conteggi»: niente nomi ne'
+    titoli in chat.
 - **Bottoni.** Portano solo un gettone corto: la query vera resta nel database
   di stato del bot, legata all'account e valida 48 ore.
 

@@ -752,7 +752,7 @@ def create_watch(owner: str, name: str, q: str, mode: str, expire_days: int | No
     return sid, bool(old and (old[0][0] != q or old[0][1] is not None))
 
 
-_WATCH_COLS = ("id", "name", "q", "watch", "last_error", "mode", "paused_until", "expires_at", "unseen")
+_WATCH_COLS = ("id", "name", "q", "watch", "last_error", "mode", "paused_until", "expires_at", "unseen", "detail")
 
 
 def list_watches(owner: str) -> list[dict]:
@@ -760,7 +760,7 @@ def list_watches(owner: str) -> list[dict]:
         rows = con.execute(
             "SELECT s.id, s.name, s.q, s.watch, s.last_error, COALESCE(p.mode, ?), "
             "CASE WHEN p.paused_until > datetime('now') THEN p.paused_until END, p.expires_at, "
-            "(SELECT COUNT(*) FROM watch_hits w WHERE w.search_id = s.id AND w.seen = 0) "
+            "(SELECT COUNT(*) FROM watch_hits w WHERE w.search_id = s.id AND w.seen = 0), COALESCE(p.detail, 'titles') "
             "FROM saved_searches s LEFT JOIN tg_watch_prefs p ON p.search_id = s.id "
             "WHERE s.owner = ? ORDER BY s.watch DESC, s.name COLLATE NOCASE",
             (DEFAULT_MODE, owner)).fetchall()
@@ -972,3 +972,360 @@ def pend_drop(tok: str, link_id: int) -> bool:
     with state() as s:
         s.execute(PEND_SCHEMA)
         return s.execute("DELETE FROM pend WHERE tok = ? AND link_id = ?", (tok, link_id)).rowcount > 0
+
+
+# ======================================================== notifiche (L4)
+#
+# Le segnalazioni le scrive solo rssintel_watch.py (watch_hits, AUTOINCREMENT,
+# una transazione per volta): i loro id arrivano quindi in ordine e un
+# segnaposto «ultimo id visto» basta a non perderne e a non ripeterne.
+# La coda delle notifiche sta nella StateDirectory del bot, non in rssintel.db:
+# i titoli gia' inviati non finiscono nel database condiviso ne' nei backup, e
+# per le notifiche rssintel.db si legge soltanto.
+#
+# Consegna «almeno una volta»: una riga passa a 'sending' prima dell'invio e a
+# 'sent' dopo. Se il processo muore in mezzo, all'avvio torna 'pending' e il
+# messaggio riparte marcato «↻ reinvio».
+
+import json as _json
+from datetime import timedelta
+
+OUTBOX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS outbox (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  link_id   INTEGER NOT NULL,
+  chat_id   INTEGER NOT NULL,
+  owner     TEXT NOT NULL,
+  hit_id    INTEGER NOT NULL,
+  search_id INTEGER NOT NULL,
+  item_id   INTEGER NOT NULL,
+  mode      TEXT NOT NULL,
+  due_at    REAL NOT NULL,          -- epoch
+  quiet     INTEGER NOT NULL DEFAULT 0,   -- spostata dalle ore di quiete: silenziosa
+  state     TEXT NOT NULL DEFAULT 'pending',   -- pending/sending/sent/dropped/collapsed/failed
+  attempts  INTEGER NOT NULL DEFAULT 0,
+  next_try  REAL NOT NULL DEFAULT 0,
+  resend    INTEGER NOT NULL DEFAULT 0,
+  batch     INTEGER,
+  first_batch INTEGER,             -- primo invio: «✓ Viste» del messaggio originale resta valido dopo un reinvio
+  taken_at  REAL,                  -- quando e' passata a 'sending'
+  created   REAL NOT NULL,
+  sent_at   REAL,
+  UNIQUE (link_id, hit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(state, link_id, due_at);
+CREATE INDEX IF NOT EXISTS idx_outbox_batch ON outbox(batch);
+CREATE INDEX IF NOT EXISTS idx_outbox_first ON outbox(first_batch);
+"""
+KEEP_SENT_DAYS = 14             # righe inviate tenute per «✓ Viste» e /stato
+FAIL_AFTER_S = 24 * 3600        # oltre, una notifica che non parte si da' per persa
+BACKLOG_MAX = 25                # oltre, un riepilogo unico invece della lista
+MAX_LINES = 15
+TAKE_MAX = 200                  # righe prese per collegamento a ogni giro (liste IN limitate)
+STALE_SENDING_S = 600           # 'sending' piu' vecchia di cosi': il giro che la inviava e' fallito
+BADREQUEST_MAX = 3              # errori permanenti (chat inesistente...): dopo 3 tentativi, 'failed'
+
+
+def _hhmm(s: str) -> tuple[int, int]:
+    h, m = s.strip().split(":")
+    return int(h), int(m)
+
+
+def push_config() -> dict:
+    slots = [ _hhmm(x) for x in os.environ.get("RSSINTEL_BOT_DIGEST_AT", "08:00,13:00,19:00").split(",") if x.strip()]
+    q = os.environ.get("RSSINTEL_BOT_QUIET", "02:00-08:00").strip()
+    quiet = tuple(_hhmm(x) for x in q.split("-")) if q else None
+    return {"slots": sorted(slots), "quiet": quiet,
+            "sound_per_hour": int(os.environ.get("RSSINTEL_BOT_SOUND_PER_HOUR", "1")),
+            "sound_per_day": int(os.environ.get("RSSINTEL_BOT_SOUND_PER_DAY", "8"))}
+
+
+def _in_quiet(t: datetime, quiet) -> bool:
+    if not quiet:
+        return False
+    (h1, m1), (h2, m2) = quiet
+    a, b, x = h1 * 60 + m1, h2 * 60 + m2, t.hour * 60 + t.minute
+    return (a <= x < b) if a < b else (x >= a or x < b)      # anche finestre a cavallo della mezzanotte
+
+
+def _quiet_end(t: datetime, quiet) -> datetime:
+    (h2, m2) = quiet[1]
+    end = t.replace(hour=h2, minute=m2, second=0, microsecond=0)
+    return end if end > t else end + timedelta(days=1)
+
+
+def due_at(mode: str, now: float, cfg: dict) -> tuple[float, bool]:
+    """Quando inviare una segnalazione: (epoch, spostata_dalla_quiete)."""
+    t = datetime.fromtimestamp(now, TZ)
+    if mode == "instant":
+        due = t
+    else:                                       # riepilogo: il prossimo orario fisso
+        due = None
+        for h, m in cfg["slots"]:
+            c = t.replace(hour=h, minute=m, second=0, microsecond=0)
+            if c > t:
+                due = c
+                break
+        if due is None:
+            h, m = cfg["slots"][0]
+            due = (t + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
+    if _in_quiet(due, cfg["quiet"]):
+        return _quiet_end(due, cfg["quiet"]).timestamp(), True
+    return due.timestamp(), False
+
+
+@contextlib.contextmanager
+def outbox():
+    with state() as s:
+        s.executescript(OUTBOX_SCHEMA)
+        yield s
+
+
+def kv_get(key: str, default=None):
+    with state() as s:
+        s.executescript(STATE_SCHEMA)
+        r = s.execute("SELECT v FROM kv WHERE k = ?", (key,)).fetchall()
+    return _json.loads(r[0][0]) if r else default
+
+
+def kv_set(key: str, value) -> None:
+    with state() as s:
+        s.executescript(STATE_SCHEMA)
+        s.execute("INSERT INTO kv(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                  (key, _json.dumps(value)))
+
+
+def enqueue(cfg: dict, now: float | None = None) -> int:
+    """Nuove segnalazioni -> coda. Ritorna quante righe sono state accodate."""
+    now = now or _time.time()
+    cursor = kv_get("hit_cursor")
+    with db() as con:
+        top = con.execute("SELECT COALESCE(MAX(id), 0) FROM watch_hits").fetchall()[0][0]
+        if cursor is None:                      # prima volta: niente storico
+            kv_set("hit_cursor", top)
+            return 0
+        if top <= cursor:
+            return 0                            # niente di nuovo: nessuna scrittura
+        rows = con.execute(
+            "SELECT w.id, w.search_id, w.item_id, s.owner, COALESCE(p.mode, ?), "
+            "CASE WHEN p.paused_until > datetime('now') THEN 1 ELSE 0 END "
+            "FROM watch_hits w JOIN saved_searches s ON s.id = w.search_id "
+            "LEFT JOIN tg_watch_prefs p ON p.search_id = s.id "
+            "WHERE w.id > ? AND w.id <= ? AND w.seen = 0 ORDER BY w.id",
+            (DEFAULT_MODE, cursor, top)).fetchall()
+        links = {}
+        for owner in {r[3] for r in rows}:
+            links[owner] = con.execute(
+                "SELECT l.id, l.chat_id FROM tg_links l JOIN users u ON u.username = l.username "
+                "WHERE l.username = ? AND l.revoked_at IS NULL AND l.blocked_at IS NULL "
+                "AND COALESCE(u.disabled, 0) = 0", (owner,)).fetchall()
+    n = 0
+    with outbox() as s:
+        s.execute("BEGIN IMMEDIATE")
+        try:
+            for hit, sid, item, owner, mode, paused in rows:
+                if mode == "novita" or paused:
+                    continue                    # restano in Novita', senza notifica
+                due, quiet = due_at(mode, now, cfg)
+                for link_id, chat_id in links.get(owner, ()):
+                    n += s.execute(
+                        "INSERT OR IGNORE INTO outbox(link_id, chat_id, owner, hit_id, search_id, item_id, mode, "
+                        "due_at, quiet, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (link_id, chat_id, owner, hit, sid, item, mode, due, int(quiet), now)).rowcount
+            s.execute("COMMIT")
+        except BaseException:
+            s.execute("ROLLBACK")
+            raise
+    kv_set("hit_cursor", top)
+    return n
+
+
+def recover_sending(older_than: float | None = None) -> int:
+    """Righe rimaste a meta' invio -> di nuovo in coda, marcate come reinvio.
+    All'avvio tutte; a ogni giro quelle ferme da piu' di STALE_SENDING_S."""
+    with outbox() as s:
+        if older_than is None:
+            return s.execute("UPDATE outbox SET state = 'pending', resend = 1 WHERE state = 'sending'").rowcount
+        return s.execute("UPDATE outbox SET state = 'pending', resend = 1 WHERE state = 'sending' AND taken_at < ?",
+                         (_time.time() - older_than,)).rowcount
+
+
+def due_links(now: float | None = None) -> list[int]:
+    now = now or _time.time()
+    with outbox() as s:
+        return [r[0] for r in s.execute(
+            "SELECT DISTINCT link_id FROM outbox WHERE state = 'pending' AND due_at <= ? AND next_try <= ?",
+            (now, now)).fetchall()]
+
+
+def take_batch(link_id: int, now: float | None = None) -> dict | None:
+    """Le righe scadute di un collegamento, segnate 'sending' sotto un nuovo batch.
+
+    Prima si scartano quelle gia' viste sul web (o sparite: articolo o ricerca
+    eliminati) e quelle di sentinelle passate a «solo Novita'» o in pausa.
+    """
+    now = now or _time.time()
+    with db() as con:
+        # il collegamento vale ancora? Scollegato (portale, /esci), bloccato o utente
+        # disattivato: le notifiche in coda non partono piu'
+        ok = con.execute(
+            "SELECT 1 FROM tg_links l JOIN users u ON u.username = l.username WHERE l.id = ? "
+            "AND l.revoked_at IS NULL AND l.blocked_at IS NULL AND COALESCE(u.disabled, 0) = 0",
+            (link_id,)).fetchall()
+    if not ok:
+        drop_link(link_id)
+        return None
+    with outbox() as s:
+        rows = s.execute(
+            "SELECT id, hit_id, search_id, item_id, mode, quiet, resend, chat_id, owner FROM outbox "
+            "WHERE link_id = ? AND state = 'pending' AND due_at <= ? AND next_try <= ? ORDER BY hit_id LIMIT ?",
+            (link_id, now, now, TAKE_MAX)).fetchall()
+    if not rows:
+        return None
+    hits = [r[1] for r in rows]
+    with db() as con:
+        live = {}
+        for i in range(0, len(hits), 500):
+            part = hits[i:i + 500]
+            for hid, seen, watch, mode, paused, detail, name, title, link, feed, pub, fetched in con.execute(
+                    "SELECT w.id, w.seen, s.watch, COALESCE(p.mode, ?), CASE WHEN p.paused_until > datetime('now') THEN 1 ELSE 0 END, "
+                    "COALESCE(p.detail, 'titles'), s.name, i.title, i.link, COALESCE(f.title, f.url), "
+                    "i.published_at, i.fetched_at "
+                    "FROM watch_hits w JOIN saved_searches s ON s.id = w.search_id "
+                    "JOIN items i ON i.id = w.item_id JOIN feeds f ON f.id = i.feed_id "
+                    "LEFT JOIN tg_watch_prefs p ON p.search_id = s.id "
+                    f"WHERE w.id IN ({','.join('?' * len(part))})", (DEFAULT_MODE, *part)).fetchall():
+                live[hid] = {"seen": seen or not watch, "mode": mode, "paused": paused, "detail": detail, "name": name,
+                             "title": title, "link": link, "feed": feed, "when": pub or fetched}
+    keep, drop = [], []
+    for r in rows:
+        x = live.get(r[1])
+        if x is None or x["seen"] or x["mode"] == "novita" or x["paused"]:
+            drop.append(r[0])
+        else:
+            keep.append((r, x))
+    with outbox() as s:
+        s.execute("BEGIN IMMEDIATE")
+        try:
+            if drop:
+                s.execute(f"UPDATE outbox SET state = 'dropped' WHERE id IN ({','.join('?' * len(drop))})", drop)
+            batch = None
+            if keep:
+                batch = (s.execute("SELECT COALESCE(MAX(batch), 0) + 1 FROM outbox").fetchall()[0][0])
+                ids = [r[0] for r, _ in keep]
+                s.execute(f"UPDATE outbox SET state = 'sending', batch = ?, first_batch = COALESCE(first_batch, ?), "
+                          f"attempts = attempts + 1, taken_at = ? WHERE id IN ({','.join('?' * len(ids))})",
+                          (batch, batch, now, *ids))
+            s.execute("COMMIT")
+        except BaseException:
+            s.execute("ROLLBACK")
+            raise
+    if not keep:
+        return None
+    first = keep[0][0]
+    return {"batch": batch, "link_id": link_id, "chat_id": first[7], "owner": first[8],
+            "resend": any(r[6] for r, _ in keep),
+            # suono deciso con la modalita' di ADESSO (potrebbe essere cambiata dopo l'accodamento)
+            "audible_wanted": any(x["mode"] == "instant" and not r[5] for r, x in keep),
+            "rows": [{"outbox_id": r[0], "hit_id": r[1], "search_id": r[2], "item_id": r[3], **x} for r, x in keep]}
+
+
+def batch_done(batch: int, ok: bool, now: float | None = None, error: str = "") -> None:
+    """Esito dell'invio. Errore temporaneo: si riprova con attese crescenti, poi 'failed'."""
+    now = now or _time.time()
+    with outbox() as s:
+        if ok:
+            s.execute("UPDATE outbox SET state = 'sent', sent_at = ? WHERE batch = ?", (now, batch))
+            s.execute("DELETE FROM outbox WHERE state IN ('sent', 'dropped', 'collapsed', 'failed') AND created < ?",
+                      (now - KEEP_SENT_DAYS * 86400,))
+            return
+        if error == "forbidden":
+            s.execute("UPDATE outbox SET state = 'dropped' WHERE batch = ?", (batch,))
+            return
+        att = s.execute("SELECT MAX(attempts) FROM outbox WHERE batch = ?", (batch,)).fetchall()[0][0] or 1
+        if error == "badrequest" and att >= BADREQUEST_MAX:
+            s.execute("UPDATE outbox SET state = 'failed' WHERE batch = ?", (batch,))
+            return
+        # per riga, dall'ora in cui doveva partire (non da quando e' stata accodata)
+        s.execute("UPDATE outbox SET state = 'failed' WHERE batch = ? AND ? - due_at > ?", (batch, now, FAIL_AFTER_S))
+        base = float(os.environ.get("RSSINTEL_BOT_RETRY_BASE_S", "30"))
+        wait = min(base * 2 ** max(0, att - 1), 1800)              # 30 s, 1, 2, 4... fino a 30 min
+        s.execute("UPDATE outbox SET state = 'pending', resend = 1, next_try = ? WHERE batch = ? AND state = 'sending'",
+                  (now + wait, batch))
+
+
+def retry_later(batch: int, seconds: float) -> None:
+    """Limite di Telegram (RetryAfter): di nuovo in coda dopo l'attesa, senza contarlo come tentativo."""
+    with outbox() as s:
+        s.execute("UPDATE outbox SET state = 'pending', attempts = MAX(attempts - 1, 0), next_try = ? "
+                  "WHERE batch = ?", (_time.time() + seconds, batch))
+
+
+def drop_link(link_id: int) -> None:
+    with outbox() as s:
+        s.execute("UPDATE outbox SET state = 'dropped' WHERE link_id = ? AND state IN ('pending', 'sending')",
+                  (link_id,))
+
+
+def batch_hits(batch: int, link_id: int) -> list[int]:
+    """Segnalazioni di un messaggio: anche se poi sono state reinviate sotto un altro batch."""
+    with outbox() as s:
+        return [r[0] for r in s.execute("SELECT hit_id FROM outbox WHERE (batch = ? OR first_batch = ?) AND link_id = ?",
+                                        (batch, batch, link_id)).fetchall()]
+
+
+def mark_hits_seen(owner: str, hit_ids: list[int]) -> int:
+    """«✓ Viste» su una notifica: come novita.php, solo segnalazioni dell'utente."""
+    if not hit_ids:
+        return 0
+    with db() as con:
+        return con.execute(
+            f"UPDATE watch_hits SET seen = 1 WHERE seen = 0 AND id IN ({','.join('?' * len(hit_ids))}) "
+            "AND search_id IN (SELECT id FROM saved_searches WHERE owner = ?)", (*hit_ids, owner)).rowcount
+
+
+def sound_allowed(link_id: int, cfg: dict, now: float | None = None) -> bool:
+    """Tetto alle notifiche sonore: al massimo N all'ora e M al giorno; poi silenziose."""
+    now = now or _time.time()
+    hist = [t for t in kv_get(f"sound:{link_id}", []) if now - t < 86400]
+    return (sum(1 for t in hist if now - t < 3600) < cfg["sound_per_hour"]
+            and len(hist) < cfg["sound_per_day"])
+
+
+def sound_used(link_id: int, now: float | None = None) -> None:
+    now = now or _time.time()
+    hist = [t for t in kv_get(f"sound:{link_id}", []) if now - t < 86400]
+    kv_set(f"sound:{link_id}", hist + [now])
+
+
+def outbox_stats() -> dict:
+    with outbox() as s:
+        r = dict(s.execute("SELECT state, COUNT(*) FROM outbox GROUP BY state").fetchall())
+        last = s.execute("SELECT MAX(sent_at) FROM outbox").fetchall()[0][0]
+    return {"pending": r.get("pending", 0) + r.get("sending", 0), "failed": r.get("failed", 0),
+            "sent": r.get("sent", 0), "last_sent": last}
+
+
+def set_detail(owner: str, sid: int, detail: str) -> bool:
+    if detail not in ("titles", "counts"):
+        return False
+    with db() as con:
+        with write_tx(con):
+            if not _owned(con, owner, sid):
+                return False
+            _prefs_upsert(con, sid)
+            con.execute("UPDATE tg_watch_prefs SET detail = ?, updated_at = datetime('now') WHERE search_id = ?",
+                        (detail, sid))
+    return True
+
+
+def noisy_instant(owner_links: dict | None = None) -> list[dict]:
+    """Sentinelle istantanee con piu' di 5 segnalazioni al giorno negli ultimi 2 giorni."""
+    with db() as con:
+        rows = con.execute(
+            "SELECT s.id, s.owner, s.name FROM saved_searches s JOIN tg_watch_prefs p ON p.search_id = s.id "
+            "WHERE s.watch = 1 AND p.mode = 'instant' AND "
+            "(SELECT COUNT(*) FROM watch_hits w WHERE w.search_id = s.id AND w.found_at > datetime('now', '-1 day')) > 5 AND "
+            "(SELECT COUNT(*) FROM watch_hits w WHERE w.search_id = s.id AND w.found_at > datetime('now', '-2 day') "
+            " AND w.found_at <= datetime('now', '-1 day')) > 5").fetchall()
+    return [{"id": a, "owner": b, "name": c} for a, b, c in rows]
