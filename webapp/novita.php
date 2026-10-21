@@ -141,7 +141,7 @@ function saved_search_url(array $s): string {
       <div class="meta">
         Nessuna allerta attiva. In <a href="search.php">Ricerca</a>, salva una
         ricerca con «🔔 avvisami dei nuovi», oppure accendi l'allerta su una
-        ricerca gia' salvata: dopo ogni raccolta (ogni 15 minuti) i nuovi articoli
+        ricerca gia' salvata: dopo ogni raccolta (ogni 3 ore) i nuovi articoli
         che corrispondono compariranno qui.
       </div>
     <?php endif; ?>

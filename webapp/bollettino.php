@@ -83,7 +83,7 @@ if (watch_table_exists($db)) {
 
 /* ---------- salute dei feed ---------- */
 // Tre segnali diversi: un errore esplicito; un feed che il fetcher non tocca da
-// ore (il timer gira ogni 15 minuti); un feed che risponde ma ha smesso di
+// ore (il timer gira ogni 3 ore: allarme dopo 7, cioe' due giri saltati); un feed che risponde ma ha smesso di
 // portare articoli, cioe' probabilmente morto o spostato (un 304 continuo non
 // genera errori, quindi senza questo controllo nessuno se ne accorgerebbe).
 //
@@ -118,7 +118,7 @@ while ($x = $r->fetchArray(SQLITE3_ASSOC)) {
   $health[] = $x;
   $why = [];
   if (!empty($x['last_error'])) $why[] = 'errore: ' . mb_substr((string)$x['last_error'], 0, 120);
-  if (!empty($x['last_fetch_at']) && strtotime((string)$x['last_fetch_at'] . ' UTC') < time() - 2 * 3600) {
+  if (!empty($x['last_fetch_at']) && strtotime((string)$x['last_fetch_at'] . ' UTC') < time() - 7 * 3600) {
     $why[] = 'non aggiornato dal ' . fmt_dt((string)$x['last_fetch_at']);
   }
   $expected = (int)$x['n_base'] / 23 * 7;   // articoli attesi in 7 giorni al ritmo abituale

@@ -15,16 +15,24 @@ HIDE_CSS = """
 [id*="didomi"], [class*="didomi"], #usercentrics-root,
 [class*="consent" i][class*="modal" i], [aria-label*="cookie" i],
 .qc-cmp2-container, #CybotCookiebotDialog, .cmp-container,
-[class*="paywall" i][class*="overlay" i] { display: none !important; }
+[class*="paywall" i][class*="overlay" i],
+.fc-consent-root, .fc-dialog-overlay, [id^="sp_message_container"],
+#iubenda-cs-banner, .iubenda-cs-container, #cmpwrapper, #cmpbox, #cmpbox2
+{ display: none !important; }
+html.sp-message-open, body.sp-message-open { overflow: visible !important; }
 html, body { overflow: visible !important; }
 """
 
 
 def capture(url: str, png_path: str, user_agent: str = "",
             width: int = 1280, settle: float = 2.5,
-            max_height: int = 30000, timeout: float = 60.0) -> dict:
+            max_height: int = 12000, timeout: float = 60.0,
+            quality: int = 72) -> dict:
     """
-    Scatta la pagina intera. Ritorna metadati (dimensioni, url finale, stato).
+    Scatta la pagina intera, in JPEG (dal 2026-10-21: prima PNG fino a
+    20 MB; ora JPEG di qualita' `quality` e altezza massima 12.000 px, di solito
+    qualche centinaio di KB). `png_path` resta il nome storico del parametro.
+    Ritorna metadati (dimensioni, url finale, stato).
     Solleva WSError/RuntimeError in caso di fallimento.
     """
     br = Chromium(user_agent=user_agent, width=width, timeout=timeout)
@@ -73,7 +81,8 @@ def capture(url: str, png_path: str, user_agent: str = "",
 
         shot = br.call(
             "Page.captureScreenshot",
-            format="png",
+            format="jpeg",
+            quality=quality,
             captureBeyondViewport=True,   # <- la ragione per cui serve il CDP
             clip={"x": 0, "y": 0, "width": w, "height": h, "scale": 1},
         )
@@ -93,5 +102,5 @@ def capture(url: str, png_path: str, user_agent: str = "",
 
 if __name__ == "__main__":
     import sys
-    r = capture(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "out.png")
+    r = capture(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "out.jpg")
     print(json.dumps(r, ensure_ascii=False, indent=2))

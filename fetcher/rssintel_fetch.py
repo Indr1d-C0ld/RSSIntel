@@ -24,14 +24,16 @@ except Exception:
 
 
 # =========================
-# CONFIG (Pi-friendly)
-# Sovrascrivibile via variabili d'ambiente (vedi config.sample.php).
+# CONFIG
 # =========================
+# dati in /var/lib/rssintel, sovrascrivibili da ambiente
 DB_PATH = os.environ.get("RSSINTEL_DB", "/var/lib/rssintel/rssintel.db")
-RAW_DIR = os.environ.get("RSSINTEL_RAW_DIR", "/var/lib/rssintel/raw")
-TXT_DIR = os.environ.get("RSSINTEL_TXT_DIR", "/var/lib/rssintel/text")
+_DATA = os.path.dirname(DB_PATH)
+RAW_DIR = os.environ.get("RSSINTEL_RAW_DIR", os.path.join(_DATA, "raw"))
+TXT_DIR = os.environ.get("RSSINTEL_TXT_DIR", os.path.join(_DATA, "text"))
 
-UA = os.environ.get("RSSINTEL_UA", "RSSIntel/1.1 (+https://example.com; research)")
+# lo user-agent con l'indirizzo del proprio sito si mette nella unit (RSSINTEL_UA)
+UA = os.environ.get("RSSINTEL_UA", "RSSIntel/1.1 (+research)")
 TIMEOUT = 25
 
 # Frequenza e carico
@@ -53,7 +55,8 @@ def now_utc():
 
 
 def ensure_dirs():
-    os.makedirs(RAW_DIR, exist_ok=True)
+    if SAVE_RAW_HTML:
+        os.makedirs(RAW_DIR, exist_ok=True)
     os.makedirs(TXT_DIR, exist_ok=True)
 
 
@@ -112,8 +115,10 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
         # tempfile.mkstemp() crea SEMPRE con modo 0600, per progetto e a
         # prescindere dalla umask (e' una garanzia della libreria standard), e
         # os.replace() preserva il modo del file temporaneo. Senza questa riga
-        # ogni file di testo nasce leggibile solo dall'utente del fetcher, e
-        # qualunque backup/sync eseguito da un altro utente fallisce in lettura.
+        # ogni .txt.gz nasce leggibile solo da www-data: e' la causa per cui il
+        # sync del mirror privato ha smesso due volte di leggere i testi nuovi
+        # (13/09 e 14/09/2026), "risolta" ogni volta con un chmod che si
+        # consumava al fetch successivo.
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     finally:
@@ -229,15 +234,27 @@ def fetch_url_limited(session: requests.Session, url: str) -> Tuple[Optional[str
         return None, status, str(ex)
 
 
-def fts_delete_insert(cur: sqlite3.Cursor, item_id: int, title: str, body: str, link: str, feed_title: str) -> None:
+def fts_delete_insert(cur: sqlite3.Cursor, item_id: int, title: str, body: str, link: str, feed_title: str,
+                      nuovo: bool = False) -> None:
     # items_fts e' una FTS5 self-contained (conserva il testo): la riga si
     # rimuove con un normale DELETE per rowid, non con il comando 'delete'
     # (che vale solo per le tabelle contentless).
-    cur.execute("DELETE FROM items_fts WHERE rowid = ?", (item_id,))
+    # Dal 2026-10-21 il trigger items_ai che inseriva una riga vuota a ogni nuovo
+    # articolo non c'e' piu'. Per un articolo nuovo la riga si scrive UNA volta
+    # sola, qui, gia' con il testo: prima ogni articolo finiva nell'indice due
+    # volte (riga vuota dal trigger, poi DELETE+INSERT).
+    if not nuovo:
+        cur.execute("DELETE FROM items_fts WHERE rowid = ?", (item_id,))
     cur.execute(
         "INSERT INTO items_fts(rowid, title, body, link, feed) VALUES(?,?,?,?,?)",
         (item_id, title or "", body or "", link or "", feed_title or ""),
     )
+
+
+# Stato dei feed (ultimo controllo, esito, ETag) raccolto durante il giro e
+# scritto tutto insieme alla fine, in una sola transazione: prima erano un
+# UPDATE + commit per feed anche quando rispondeva 304 «non cambiato».
+STATO_FEED: list = []
 
 
 def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -> int:
@@ -251,15 +268,16 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
         headers["If-Modified-Since"] = last_mod
 
     try:
+        # Anche l'URL del feed passa dal controllo: lo inserisce un admin, ma
+        # un refuso o un feed che redirige verso la rete interna verrebbero
+        # comunque seguiti. L'errore finisce in feeds.last_error, visibile
+        # nella pagina Feeds.
         r = get_checked(session, url, timeout=TIMEOUT, headers=headers)
         status = r.status_code
 
         if status == 304:
-            cur.execute(
-                "UPDATE feeds SET last_fetch_at=?, last_status=?, last_error=NULL, updated_at=datetime('now') WHERE id=?",
-                (now_utc(), status, feed_id),
-            )
-            con.commit()
+            STATO_FEED.append(("UPDATE feeds SET last_fetch_at=?, last_status=?, last_error=NULL WHERE id=?",
+                               (now_utc(), status, feed_id)))
             return 0
 
         r.raise_for_status()
@@ -269,19 +287,24 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
         new_etag = r.headers.get("ETag")
         new_lm = r.headers.get("Last-Modified")
 
-        cur.execute(
+        STATO_FEED.append((
             "UPDATE feeds SET title=?, etag=?, last_modified=?, last_fetch_at=?, last_status=?, last_error=NULL, updated_at=datetime('now') WHERE id=?",
-            (feed_title or None, new_etag, new_lm, now_utc(), status, feed_id),
-        )
-        con.commit()
+            (feed_title or None, new_etag, new_lm, now_utc(), status, feed_id)))
 
         added = 0
         processed_new = 0
 
-        # NIENTE transazione che avvolge il ciclo: il lock di scrittura
-        # verrebbe tenuto per tutto il giro, download inclusi, e la webapp
-        # (busy_timeout 3s) perderebbe scritture in silenzio. Due transazioni
-        # brevi per item, con la rete in mezzo e fuori da entrambe.
+        # NIENTE transazione che avvolge il ciclo.
+        #
+        # Prima qui c'era un BEGIN che veniva chiuso solo a fine ciclo: il lock
+        # di scrittura veniva preso alla prima INSERT e tenuto per tutto il
+        # resto, inclusi fino a 50 download da 25s l'uno. In WAL i lettori non
+        # si bloccano, ma gli scrittori si': la webapp (busy_timeout 3s) vedeva
+        # "database is locked" e perdeva in silenzio righe di access_log,
+        # favoriti e note salvate durante il fetch.
+        #
+        # Ora ogni item usa due transazioni brevi (INSERT, poi UPDATE+FTS) con
+        # la rete in mezzo, fuori da entrambe: il lock si tiene per millisecondi.
         for e in parsed.entries:
             if processed_new >= PER_FEED_MAX_NEW_ITEMS_PER_RUN:
                 break
@@ -324,7 +347,9 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
                     item_id = cur.lastrowid
                     added += 1
                     processed_new += 1
-                    con.commit()   # chiudi prima del download
+                    # Chiudi subito: il download che segue non deve avvenire
+                    # con il lock di scrittura in mano.
+                    con.commit()
                 except sqlite3.IntegrityError:
                     # collisione su UNIQUE(feed_id, link) / guid: recupera id e prosegui come existing
                     row = cur.execute("SELECT id, text_path, content_hash FROM items WHERE feed_id=? AND link=?",
@@ -332,6 +357,7 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
                     if not row:
                         continue
                     item_id, text_path, content_hash = row
+                    existing = row          # da qui in poi e' un articolo gia' noto
             else:
                 item_id = existing[0]
 
@@ -339,12 +365,14 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
             html, st, err = fetch_url_limited(session, link)
             time.sleep(REQUEST_DELAY_SECONDS)
 
-            if html is None:
-                # salva errore su item? (non indispensabile)
-                continue
-
-            text = extract_text(html)
+            text = extract_text(html) if html is not None else ""
             if not text:
+                # articolo non scaricabile o vuoto: se e' nuovo entra comunque
+                # nell'indice con il solo titolo, per essere trovato; il testo
+                # si riprova al prossimo giro finche' resta nel feed
+                if not existing:
+                    fts_delete_insert(cur, item_id, title, "", link, feed_title, nuovo=True)
+                    con.commit()
                 continue
 
             ch = sha256(text)
@@ -367,30 +395,19 @@ def process_feed(con: sqlite3.Connection, session: requests.Session, feed_row) -
                 (title or None, author, published, raw_path, text_path, ch, item_id),
             )
 
-            # Aggiorna FTS (delete+insert)
-            fts_delete_insert(cur, item_id, title, text, link, feed_title)
+            # Aggiorna FTS: un solo INSERT per gli articoli nuovi
+            fts_delete_insert(cur, item_id, title, text, link, feed_title, nuovo=not existing)
 
+            # Transazione breve numero due: chiusa prima del prossimo download.
             con.commit()
 
         con.commit()
-
-        # checkpoint leggero post-feed (riduce rischio di WAL enorme)
-        try:
-            cur.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        except Exception:
-            pass
-
+        # il checkpoint del WAL si fa una volta a fine giro (main), non per feed
         return added
 
     except Exception as ex:
-        try:
-            cur.execute(
-                "UPDATE feeds SET last_fetch_at=?, last_status=?, last_error=?, updated_at=datetime('now') WHERE id=?",
-                (now_utc(), None, str(ex), feed_id),
-            )
-            con.commit()
-        except Exception:
-            pass
+        STATO_FEED.append(("UPDATE feeds SET last_fetch_at=?, last_status=?, last_error=?, updated_at=datetime('now') WHERE id=?",
+                           (now_utc(), None, str(ex)[:500], feed_id)))
         return 0
 
 
@@ -409,7 +426,18 @@ def main() -> int:
     for fr in feeds:
         total_added += process_feed(con, session, fr)
 
-    print(f"[rssintel] done. new_items={total_added}")
+    # stato di tutti i feed in una transazione, poi un solo checkpoint del WAL
+    with con:
+        for sql, args in STATO_FEED:
+            con.execute(sql, args)
+    try:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    except sqlite3.Error:
+        pass
+
+    errori = sum(1 for sql, a in STATO_FEED if "last_error=?" in sql)
+    print(f"[rssintel] fatto: {len(feeds)} feed, {total_added} articoli nuovi"
+          + (f", {errori} feed in errore" if errori else ""))
     con.close()
     return 0
 

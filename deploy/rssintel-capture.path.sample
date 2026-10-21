@@ -1,0 +1,11 @@
+[Unit]
+Description=RSSIntel - avvia le catture quando la webapp ne accoda una
+
+[Path]
+# capture.php crea il file quando accoda una cattura; il worker lo cancella
+# appena parte. Finche' esiste, systemd (ri)avvia il servizio: niente timer.
+PathExists=/var/lib/rssintel/captures/.richiesta
+Unit=rssintel-capture.service
+
+[Install]
+WantedBy=paths.target

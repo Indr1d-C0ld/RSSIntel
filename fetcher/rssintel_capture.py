@@ -3,7 +3,13 @@
 RSSIntel — worker delle catture visive.
 
 Processa la coda `captures`: per ogni richiesta pendente rende la pagina
-originale con Chromium headless e salva un PNG a pagina intera.
+originale con Chromium headless e salva un JPEG a pagina intera.
+
+Dal 2026-10-21 niente piu' timer ogni 2 minuti. capture.php, quando
+accoda una richiesta, crea il file-segnale <catture>/.richiesta; un'unita'
+.path di systemd lo vede (inotify, nessun polling) e avvia questo worker, che
+cancella il segnale e svuota la coda. Se nel frattempo arriva un'altra
+richiesta, il segnale ricompare e systemd riavvia il worker alla fine.
 
 Gira con il python3 di SISTEMA (ha requests e Pillow), non con
 /opt/rssintel-venv, che non ha Pillow. Il filtro SSRF viene importato dal
@@ -31,13 +37,14 @@ from shot import capture                     # noqa: E402
 from rssintel_fetch import is_public_url      # noqa: E402
 
 DB_PATH      = os.environ.get("RSSINTEL_DB", "/var/lib/rssintel/rssintel.db")
-CAP_DIR      = os.environ.get("RSSINTEL_CAP_DIR", "/var/lib/rssintel/captures")
+CAP_DIR      = os.environ.get("RSSINTEL_CAP_DIR", os.path.join(os.path.dirname(DB_PATH), "captures"))
+SEGNALE      = os.path.join(CAP_DIR, ".richiesta")
 LOCK_PATH    = os.environ.get("RSSINTEL_CAP_LOCK", "/run/lock/rssintel-capture.lock")
 UA           = os.environ.get("RSSINTEL_UA", "RSSIntel/1.1 (+research)")
 
 MAX_PER_RUN  = int(os.environ.get("RSSINTEL_CAP_MAX", "10"))
 PAGE_TIMEOUT = float(os.environ.get("RSSINTEL_CAP_TIMEOUT", "60"))
-MAX_BYTES    = int(os.environ.get("RSSINTEL_CAP_MAXBYTES", str(20 * 1024 * 1024)))
+MAX_BYTES    = int(os.environ.get("RSSINTEL_CAP_MAXBYTES", str(8 * 1024 * 1024)))
 THUMB_WIDTH  = 320
 
 
@@ -58,7 +65,7 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def make_thumb(png_path: str, thumb_path: str) -> bool:
+def make_thumb(png_path: str, thumb_path: str) -> bool:     # png_path: ora un JPEG
     """Miniatura per l'elenco dei favoriti. Fallire qui non e' grave."""
     try:
         from PIL import Image
@@ -116,7 +123,7 @@ def process_one(con: sqlite3.Connection, cap_id: int, item_id: int, url: str) ->
     d = os.path.join(CAP_DIR, str(item_id))
     os.makedirs(d, exist_ok=True)
     os.chmod(d, 0o755)
-    png = os.path.join(d, f"{cap_id}.png")
+    png = os.path.join(d, f"{cap_id}.jpg")
     thumb = os.path.join(d, f"{cap_id}_thumb.jpg")
 
     try:
@@ -153,8 +160,9 @@ def sweep_orphans(con: sqlite3.Connection) -> int:
     """
     if not os.path.isdir(CAP_DIR):
         return 0
+    # una cattura vale per il suo file (.jpg, o .png delle vecchie) e la miniatura
     live = {
-        (str(i), f"{c}.png")
+        (str(i), str(c))
         for c, i in con.execute(
             "SELECT id, item_id FROM captures WHERE png_path IS NOT NULL")
     }
@@ -164,7 +172,7 @@ def sweep_orphans(con: sqlite3.Connection) -> int:
         if not os.path.isdir(p):
             continue
         for fn in os.listdir(p):
-            base = fn.replace("_thumb.jpg", ".png")
+            base = fn.split("_", 1)[0].split(".", 1)[0]
             if (sub, base) not in live:
                 try:
                     os.unlink(os.path.join(p, fn))
@@ -189,6 +197,13 @@ def main() -> int:
     except BlockingIOError:
         print("[capture] un'altra istanza e' gia' in esecuzione, esco")
         return 0
+
+    # il segnale si toglie PRIMA di guardare la coda: una richiesta che arriva
+    # da qui in poi lo ricrea, e systemd riavviera' il worker
+    try:
+        os.unlink(SEGNALE)
+    except FileNotFoundError:
+        pass
 
     con = db()
     done = failed = 0

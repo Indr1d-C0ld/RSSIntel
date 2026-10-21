@@ -47,11 +47,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
   tokenize='unicode61'
 );
 
--- Trigger “manuale” (non content=items) per semplicità e controllo
-CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
-  INSERT INTO items_fts(rowid, title, body, link, feed)
-  VALUES (new.id, COALESCE(new.title,''), '', COALESCE(new.link,''), '');
-END;
+-- Niente trigger in inserimento (dal 2026-10-21): la riga dell'indice la
+-- scrive il fetcher una volta sola, gia' con il testo (prima un trigger inseriva
+-- una riga vuota e il fetcher la rifaceva: ogni articolo scritto due volte).
+DROP TRIGGER IF EXISTS items_ai;
 
 -- ...e anche in cancellazione: senza questo trigger, eliminare un feed (cascata
 -- su items) lasciava le righe degli articoli nell'indice. Scatta anche sulle

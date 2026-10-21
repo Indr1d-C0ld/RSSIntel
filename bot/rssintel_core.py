@@ -1393,7 +1393,7 @@ def feed_health(b: str | None = None, a: str | None = None) -> tuple[list[dict],
         if last_fetch:
             try:
                 lf = datetime.strptime(last_fetch[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                if lf < now - timedelta(hours=2):
+                if lf < now - timedelta(hours=7):     # raccolta ogni 3 ore: due giri saltati
                     why.append("non aggiornato dal " + lf.astimezone(TZ).strftime("%d/%m/%Y %H:%M")); kinds.append("stale")
             except ValueError:
                 pass

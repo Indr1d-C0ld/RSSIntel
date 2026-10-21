@@ -1,10 +1,13 @@
 [Unit]
-Description=RSSIntel - periodic fetch
+Description=RSSIntel - raccolta ogni 3 ore
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=15min
+# 00:40 03:40 06:40 ... 21:40: minuto scelto per non sovrapporsi agli altri
+# lavori della macchina. I feed piu' rapidi tengono 10-24 ore di articoli:
+# ogni 3 ore non se ne perde nessuno.
+OnCalendar=*-*-* 00/3:40:00
 Persistent=true
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target

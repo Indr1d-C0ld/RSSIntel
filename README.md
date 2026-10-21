@@ -5,8 +5,9 @@ regolari, ne estrae il testo completo e lo indicizza per la ricerca full-text.
 Sopra l'archivio: un **bollettino** quotidiano ordinato per tipo di fonte,
 **allerte** sulle ricerche salvate, **classificazione delle fonti** con il
 codice dell'Ammiragliato, annotazioni e tag, favoriti con note, **catture
-visive** a pagina intera della pagina originale, e un ponte verso un servizio
-di traduzione (NLLB / LibreTranslate compatibile). Multi-utente con ruoli.
+visive** a pagina intera della pagina originale. Multi-utente con ruoli.
+Pensato per macchine piccole: raccolta a intervalli lunghi e a bassa priorità,
+poche scritture su disco (vedi «Carico e scritture»).
 
 Stack: **PHP 8.1+** e **SQLite** per la webapp, **Python 3.11+** per fetcher e
 worker. Nessun framework, nessun database server, nessuna build.
@@ -52,7 +53,7 @@ cd RSSIntel
 
 # 1. Configurazione
 cp config.sample.php config.php
-$EDITOR config.php          # percorso DB, endpoint traduzione, utenti admin
+$EDITOR config.php          # percorso DB, conservazione del log accessi
 
 # 2. Database
 mkdir -p /var/lib/rssintel/text
@@ -69,7 +70,8 @@ python3 -m venv /opt/rssintel-venv
 
 ### Fetch periodico
 
-Adatta e installa le unit di esempio:
+Adatta e installa le unit di esempio (il timer raccoglie ogni 3 ore, a
+priorità minima di CPU e disco):
 
 ```bash
 cp deploy/rssintel-fetch.service.sample /etc/systemd/system/rssintel-fetch.service
@@ -77,8 +79,12 @@ cp deploy/rssintel-fetch.timer.sample   /etc/systemd/system/rssintel-fetch.timer
 systemctl enable --now rssintel-fetch.timer
 ```
 
-Il fetcher legge i percorsi anche da variabili d'ambiente
-(`RSSINTEL_DB`, `RSSINTEL_TXT_DIR`, `RSSINTEL_RAW_DIR`, `RSSINTEL_UA`).
+Il fetcher legge i percorsi da variabili d'ambiente (`RSSINTEL_DB`,
+`RSSINTEL_TXT_DIR`, `RSSINTEL_RAW_DIR`), con `/var/lib/rssintel` come
+predefinito, e l'user-agent da `RSSINTEL_UA`: mettici l'indirizzo del tuo sito.
+Tre ore bastano per la maggior parte dei feed, che tengono gli articoli
+dell'ultimo giorno o più; per un feed che ne tiene solo poche ore conviene un
+intervallo più breve, altrimenti qualche articolo esce dal feed prima del giro.
 
 ## Bollettino, allerte e fonti
 
@@ -113,14 +119,20 @@ Aggiornando un'installazione esistente vedi `deploy/migrations/`.
 ## Catture visive
 
 Da un articolo (o dai Favoriti) un utente `collaborator`/`admin` può chiedere
-una **cattura a pagina intera** della pagina originale: un PNG con miniatura,
+una **cattura a pagina intera** della pagina originale: un JPEG (altezza massima
+12.000 px, di solito qualche centinaio di KB) con miniatura,
 impronta SHA-256, URL finale dopo i redirect e data. Le catture sono versionate
 (ricatturare aggiunge, non sostituisce) ed eliminabili da chi le ha richieste o
 da un admin.
 
-- La pagina **accoda** soltanto: il rendering (10-30 s di Chromium) lo esegue
-  `fetcher/rssintel_capture.py`, avviato da un timer systemd
-  (`deploy/rssintel-capture.*.sample`), una cattura alla volta.
+- La pagina **accoda** soltanto e crea un file-segnale
+  (`<captures_dir>/.richiesta`). Un'unità `.path` di systemd lo vede (inotify,
+  nessun polling) e avvia `fetcher/rssintel_capture.py`, che svuota la coda,
+  una cattura alla volta (`deploy/rssintel-capture.{service,path}.sample`).
+  Senza richieste Chromium non parte mai.
+- Prima dello scatto si nascondono i banner di consenso più diffusi
+  (OneTrust, Didomi, Usercentrics, Quantcast, Cookiebot, Google Funding
+  Choices, Sourcepoint, iubenda…).
 - Il lavoro passa dallo stesso filtro anti-SSRF del fetcher: solo http/https e
   solo indirizzi pubblici, redirect rivalidati a ogni salto.
 - `chromium --screenshot` cattura solo il viewport: la pagina intera si ottiene
@@ -234,15 +246,30 @@ può leggere anche file di altri siti: elencali in un'estensione della unit
 | Chiave | Significato |
 |---|---|
 | `db_path` | percorso assoluto del file SQLite |
-| `translate_url` | endpoint del servizio di traduzione (`POST {q,source,target}` → `{translatedText}`) |
-| `translate_max_chars` | tetto in byte al testo inviato a `translate_url` |
-| `admins` | valori di `REMOTE_USER` abilitati alla gestione dei feed |
+| `access_log_retention_days` | giorni di conservazione del log accessi (0 = per sempre) |
+| `ipgeo` | risolve il paese degli IP del log accessi via ip-api.com |
+| `captures_dir`, `text_dir` | cartelle delle catture e dei testi, se non accanto al DB |
+| `admins` | legacy, non più necessario con la tabella `users` |
 
-## Traduzione
+## Carico e scritture
 
-`webapp/translate.php` è un semplice proxy verso `translate_url`. Qualunque
-servizio che rispetti il contratto `POST {q, source, target}` → `{translatedText}`
-va bene (LibreTranslate, o un wrapper HTTP attorno a un modello NLLB).
+RSSIntel gira bene anche su una macchina piccola con un solo SSD:
+
+- **Raccolta** ogni 3 ore, con `Nice=19` e `IOSchedulingClass=idle`; un giro
+  di una decina di feed dura pochi secondi se nessuno ha novità.
+- **Stato dei feed** (ultimo controllo, esito, ETag) scritto in una sola
+  transazione a fine giro; un feed che risponde `304` non scrive nulla da sé.
+  Un solo checkpoint del WAL per giro.
+- **Indice di ricerca**: ogni articolo nuovo vi entra una volta sola, già con
+  il testo (nessun trigger che inserisce una riga vuota da riscrivere).
+- **Testi** compressi (`.txt.gz`), uno per articolo; l'HTML grezzo non si
+  salva (`SAVE_RAW_HTML = False`).
+- **Catture** solo su richiesta, in JPEG; nessun timer.
+- **Log accessi**: niente righe per le miniature e i controlli automatici
+  delle catture; conservazione impostabile (`access_log_retention_days`).
+
+La traduzione automatica (proxy verso un motore locale tipo NLLB) è stata
+tolta: un modello in locale pesa troppo per questo tipo di macchina.
 
 ## Licenza
 

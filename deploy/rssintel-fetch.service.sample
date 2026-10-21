@@ -1,5 +1,5 @@
 [Unit]
-Description=RSSIntel - fetch and index feeds
+Description=RSSIntel - raccolta e indicizzazione dei feed
 After=network-online.target
 Wants=network-online.target
 
@@ -7,15 +7,19 @@ Wants=network-online.target
 Type=oneshot
 User=www-data
 Group=www-data
-# Adatta i percorsi al tuo ambiente (venv + posizione dello script).
-Environment=RSSINTEL_DB=/var/lib/rssintel/rssintel.db
-Environment=RSSINTEL_TXT_DIR=/var/lib/rssintel/text
-Environment=RSSINTEL_RAW_DIR=/var/lib/rssintel/raw
-Environment=RSSINTEL_UA=RSSIntel/1.1 (+https://example.com; research)
+Environment=RSSINTEL_DB=/var/lib/rssintel/rssintel.db PYTHONDONTWRITEBYTECODE=1
+Environment="RSSINTEL_UA=RSSIntel/1.1 (+https://example.org; research)"
 ExecStart=/opt/rssintel-venv/bin/python /opt/rssintel/rssintel_fetch.py
-# Allerte sulle ricerche salvate: subito dopo ogni giro, rssintel_watch.py
-# riesegue le ricerche con allerta attiva sui soli articoli nuovi (legge il DB
-# da RSSINTEL_DB). Il "-" iniziale: un errore delle allerte non deve segnare
-# come fallita una raccolta andata a buon fine.
 ExecStartPost=-/opt/rssintel-venv/bin/python /opt/rssintel/rssintel_watch.py
 WorkingDirectory=/opt/rssintel
+# priorita' minima di CPU e disco: mai un picco che si senta
+Nice=19
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+UMask=0002
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rssintel
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

@@ -341,6 +341,12 @@ function log_access(): void {
   if ($registered || PHP_SAPI === 'cli') return;
   $registered = true;
 
+  // Dal 2026-10-21 non si registrano le richieste automatiche che la
+  // pagina fa da sola (miniature e immagini delle catture, controllo dello stato
+  // ogni 8 secondi): erano scritture nel DB senza valore per il log.
+  $script = basename((string)($_SERVER['SCRIPT_NAME'] ?? ''));
+  if ($script === 'capture.php' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET') return;
+
   register_shutdown_function(function () {
     try {
       $db = db_rw();
@@ -637,7 +643,7 @@ function watch_unseen_count(SQLite3 $db, string $owner): int {
 
 /**
  * Cartella delle catture. Sta FUORI dal webroot di proposito: sotto
- * /data/html/ i file sarebbero scaricabili da chiunque senza autenticazione
+ * /var/www/html/ i file sarebbero scaricabili da chiunque senza autenticazione
  * (stessa classe di problema dei backup *.php~). Vengono serviti da
  * capture.php, che passa da require_login().
  */

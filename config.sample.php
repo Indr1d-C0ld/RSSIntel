@@ -17,19 +17,6 @@ return [
     // Deve essere leggibile/scrivibile dall'utente del webserver e da quello del fetcher.
     'db_path' => '/var/lib/rssintel/rssintel.db',
 
-    // Endpoint del servizio di traduzione.
-    // Contratto: POST JSON {q, source, target} -> risposta JSON {translatedText}
-    // Compatibile con LibreTranslate e con un wrapper HTTP su modelli NLLB.
-    'translate_url' => 'http://127.0.0.1:5000/translate',
-
-    // Tetto rigido (byte): oltre questa soglia translate.php risponde 413.
-    'translate_max_chars' => 50000,
-
-    // Limite pratico del motore (caratteri): quanto testo traduce bene in una
-    // volta (NLLB ~512 token). Mostrato nella sezione traduzione di item.php e
-    // usato per troncare lato client e lato server. ~2000 ≈ 350 parole.
-    'translate_soft_limit' => 2000,
-
     // Legacy: usato solo dal vecchio is_admin($u) prima dell'auth applicativa.
     // Con la tabella `users` non serve piu' (i ruoli stanno nel DB); lasciato
     // per retrocompatibilita'.
@@ -40,12 +27,13 @@ return [
     // feed in feeds.php, che rimuove anche i file di testo dei suoi articoli.
     // 'text_dir' => '/var/lib/rssintel/text',
 
-    // Cartella delle catture visive (PNG a piena pagina degli articoli).
+    // Cartella delle catture visive (JPEG a piena pagina degli articoli).
     // DEVE stare fuori dal webroot: i file sono serviti da capture.php dopo
     // require_login(), mentre sotto la webroot sarebbero scaricabili da
     // chiunque. Se omessa: <cartella del db>/captures.
     // Le catture le produce rssintel_capture.py, avviato da
-    // rssintel-capture.timer; richiede chromium installato.
+    // rssintel-capture.path quando capture.php crea il file-segnale
+    // <cartella>/.richiesta; richiede chromium installato.
     // 'captures_dir' => '/var/lib/rssintel/captures',
 
     // Giorni di conservazione del log accessi (accessi.php).

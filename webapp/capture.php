@@ -5,8 +5,8 @@ require __DIR__ . '/lib.php';
 /**
  * Catture visive: accodamento, stato e consegna dei file.
  *
- * I PNG stanno fuori dal webroot e solo questo script li serve, dopo
- * require_login(). Sotto /data/html/ sarebbero scaricabili da chiunque.
+* Le immagini stanno fuori dal webroot e solo questo script li serve, dopo
+ * require_login(). Sotto /var/www/html/ sarebbero scaricabili da chiunque.
  */
 
 require_login();
@@ -72,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       if (!empty($c['png_path'])) {
         $root = realpath(captures_dir());
         foreach ([(string)$c['png_path'],
-                  preg_replace('~\.png$~', '_thumb.jpg', (string)$c['png_path'])] as $rel) {
+                  preg_replace('~\.(png|jpg)$~', '_thumb.jpg', (string)$c['png_path'])] as $rel) {
           $full = realpath(captures_dir() . '/' . $rel);
           if ($full !== false && $root !== false && str_starts_with($full, $root . '/')) {
             @unlink($full);
@@ -115,8 +115,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $ins->bindValue(':u', current_user(), SQLITE3_TEXT);
     $ins->bindValue(':l', (string)$row['link'], SQLITE3_TEXT);
     $ins->execute();
+    // file-segnale: l'unita' rssintel-capture.path lo vede e avvia il worker
+    // (niente timer che gira a vuoto)
+    @touch(captures_dir() . '/.richiesta');
 
-    $_SESSION['flash'] = ['ok', 'Cattura accodata: viene eseguita entro pochi minuti.'];
+    $_SESSION['flash'] = ['ok', 'Cattura accodata: parte subito, pronta in meno di un minuto.'];
   } catch (Throwable $e) {
     $_SESSION['flash'] = ['err', $e->getMessage()];
   }
@@ -166,7 +169,7 @@ if (!$c || (string)$c['status'] !== 'done' || empty($c['png_path'])) {
 
 $base = captures_dir();
 $rel  = (string)$c['png_path'];
-if ($thumb) $rel = preg_replace('~\.png$~', '_thumb.jpg', $rel);
+if ($thumb) $rel = preg_replace('~\.(png|jpg)$~', '_thumb.jpg', $rel);
 
 // png_path lo scrive il worker, ma la verifica resta: il percorso risolto deve
 // cadere dentro la cartella delle catture, altrimenti un valore anomalo nel DB
@@ -178,9 +181,11 @@ if ($full === false || $root === false || !str_starts_with($full, $root . '/')) 
   die('File non trovato.');
 }
 
-$type = $thumb ? 'image/jpeg' : 'image/png';
+// dal 2026-10-21 le catture sono JPEG; le eventuali vecchie restano PNG
+$jpg  = $thumb || str_ends_with($rel, '.jpg');
+$type = $jpg ? 'image/jpeg' : 'image/png';
 $name = 'rssintel-item' . (int)$c['item_id'] . '-cattura' . (int)$c['id']
-      . ($thumb ? '.jpg' : '.png');
+      . ($jpg ? '.jpg' : '.png');
 
 header('Content-Type: ' . $type);
 header('Content-Length: ' . (string)filesize($full));

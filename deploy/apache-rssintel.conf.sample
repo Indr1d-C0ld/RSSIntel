@@ -1,0 +1,38 @@
+# RSSIntel — conf Apache (conf-available/rssintel.conf, a2enconf).
+# Riunisce in un file le due conf del vecchio server (rssintel.conf e
+# rssintel-security-headers.conf) e le negazioni del .htaccess, cosi' la
+# protezione di config.php e del DB non dipende solo dal .htaccess.
+<Directory /var/www/html/rssintel>
+    # dentro .htaccess solo Require/Auth*: Header e Options lo romperebbero (500)
+    AllowOverride AuthConfig
+    Options -Indexes
+
+    <FilesMatch "\.(sql|db|db-wal|db-shm|sqlite|sqlite3)$">
+        Require all denied
+    </FilesMatch>
+    <FilesMatch "(~|\.(bak|orig|save|old|tmp|swp|swo|rej))$">
+        Require all denied
+    </FilesMatch>
+    <FilesMatch "^(config\.php|config\.sample\.php|stopwords\.php)$">
+        Require all denied
+    </FilesMatch>
+
+    <IfModule mod_headers.c>
+        Header always set X-Content-Type-Options "nosniff"
+        Header always set X-Frame-Options "SAMEORIGIN"
+        Header always set Referrer-Policy "same-origin"
+        Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
+        <Files "base.css">
+            Header set Cache-Control "no-cache"
+        </Files>
+        <FilesMatch "\.php$">
+            Header always set Cache-Control "no-store, no-cache, must-revalidate"
+        </FilesMatch>
+    </IfModule>
+</Directory>
+
+<Directory /var/www/html/rssintel/assets/themes>
+    <IfModule mod_headers.c>
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </IfModule>
+</Directory>

@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-10-21 — Versione leggera: meno carico, meno scritture, niente traduzione
+
+- **Traduzione tolta.** Via `webapp/translate.php`, la sezione «Traduci
+  selezione» e il suo script in `item.php`, le chiavi `translate_*` di
+  `config.sample.php`. Un motore locale (NLLB/LibreTranslate) pesa troppo per
+  una macchina piccola.
+- `fetcher/rssintel_fetch.py`:
+  - percorsi da `RSSINTEL_DB` / `RSSINTEL_TXT_DIR` / `RSSINTEL_RAW_DIR`
+    (predefinito `/var/lib/rssintel`) e user-agent da `RSSINTEL_UA`: il file
+    non contiene più nulla di proprio di un'installazione;
+  - lo stato dei feed si raccoglie durante il giro e si scrive in una sola
+    transazione alla fine; un `304` non scrive più nulla da sé;
+  - un solo `wal_checkpoint(TRUNCATE)` per giro invece di uno per feed;
+  - l'articolo nuovo entra nell'indice FTS una volta sola, già con il testo
+    (prima: riga vuota dal trigger, poi DELETE+INSERT). Se il testo non si
+    scarica entra con il solo titolo, e si riprova al giro dopo;
+  - la cartella `raw/` si crea solo con `SAVE_RAW_HTML`.
+- `schema.sql`: tolto il trigger `items_ai` (`DROP TRIGGER IF EXISTS`, vale
+  anche per i database esistenti).
+- **Catture** (`shot.py`, `rssintel_capture.py`, `capture.php`):
+  - JPEG qualità 72 invece di PNG, altezza massima 12.000 px, tetto 8 MB:
+    di solito qualche centinaio di KB;
+  - niente timer ogni 2 minuti: `capture.php` crea il file-segnale
+    `<captures_dir>/.richiesta`, l'unità `rssintel-capture.path` avvia il
+    worker, che lo cancella e svuota la coda;
+  - più banner di consenso nascosti (Google Funding Choices, Sourcepoint,
+    iubenda, cmpbox);
+  - le catture PNG già esistenti continuano a essere servite.
+- **Ritmo di raccolta** ogni 3 ore (`rssintel-fetch.timer.sample`), con
+  `Nice=19`, `IOSchedulingClass=idle` e sandbox nella unit. Di conseguenza la
+  salute dei feed segnala «non aggiornato» dopo 7 ore invece di 2
+  (`bollettino.php`, `rssintel_core.py`), e il bot controlla coda, sentinelle e
+  fonti meno spesso (variabili `RSSINTEL_BOT_*_S` nella unit).
+- **Log accessi**: niente righe per le immagini e i controlli di stato delle
+  catture (`capture.php` in GET).
+- `deploy/`: `apache-rssintel.conf.sample` (header di sicurezza e negazioni in
+  un file solo), `rssintel-capture.path.sample`; tolto
+  `rssintel-capture.timer.sample`.
+- README: sezione «Carico e scritture».
+
 ## 2026-10-15 (5) — Bot Telegram, lotto L5: bollettino
 
 - `bot/rssintel_core.py` — bollettino. Stesse regole di `bollettino.php`:

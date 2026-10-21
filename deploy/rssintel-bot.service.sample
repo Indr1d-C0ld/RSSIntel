@@ -4,8 +4,8 @@ Documentation=file:///opt/rssintel-bot/rssintel_bot.py
 After=network-online.target
 Wants=network-online.target
 # un crash continuo non deve girare in ciclo per sempre: 5 avvii falliti in un'ora
-# (con le attese crescenti sotto: ~6 minuti) e la unit va in failed, cosi' scatta
-# l'avviso OnFailure. Il codice 78 (token/credenziali/DB sbagliato) ci va subito.
+# (con le attese crescenti sotto: ~6 minuti) e la unit va in failed, cosi' il bot
+# di amministrazione del server lo segnala. Il codice 78 (token/credenziali/DB sbagliato) ci va subito.
 StartLimitIntervalSec=1h
 StartLimitBurst=5
 
@@ -14,6 +14,9 @@ Type=simple
 User=rssintel-bot
 Group=www-data
 Environment=RSSINTEL_DB=/var/lib/rssintel/rssintel.db PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+# Controlli distanziati (dal 2026-10-21). Gli articoli arrivano ogni
+# 3 ore: guardare la coda ogni 30 s e la salute dei feed ogni 15 min non serve.
+Environment=RSSINTEL_BOT_PUSH_S=120 RSSINTEL_BOT_WATCH_JOBS_S=1800 RSSINTEL_BOT_HEALTH_S=3600 RSSINTEL_BOT_WATCHDOG_S=1800 RSSINTEL_BOT_MORNING_S=120
 # segreti come credenziali systemd, mai in Environment= (visibile da /proc e D-Bus)
 LoadCredentialEncrypted=bot_token:/etc/credstore.encrypted/rssintel-bot.token
 LoadCredential=allowed_ids:/etc/credstore/rssintel-bot.allowed
